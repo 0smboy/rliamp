@@ -1,0 +1,23 @@
+[package]
+name = "rliamp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+cpal = "0.13.5"
+coreaudio-sys = "=0.2.12"
+crossterm = "0.25.0"
+glob = "0.3"
+libloading = "=0.8.0"
+lock_api = "=0.4.11"
+parking_lot = "=0.12.1"
+parking_lot_core = "=0.9.9"
+proc-macro2 = "=1.0.80"
+quote = "=1.0.36"
+rand = "0.8"
+rustfft = "6.1"
+syn = "=2.0.60"
+symphonia = { version = "0.5.2", features = ["mp3", "aac", "isomp4", "alac"] }
+unicode-ident = "=1.0.12"
+unicode-width = "0.1"
