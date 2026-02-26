@@ -41,11 +41,16 @@ pub struct Track {
     pub path: String,
     pub title: String,
     pub artist: String,
+    pub stream: bool,
 }
 
 impl Track {
     pub fn from_path(path: impl Into<String>) -> Self {
         let path = path.into();
+        if is_url(&path) {
+            return track_from_url(path);
+        }
+
         let base = Path::new(&path)
             .file_name()
             .and_then(|s| s.to_str())
@@ -63,6 +68,7 @@ impl Track {
                 path,
                 title: title.trim().to_string(),
                 artist: artist.trim().to_string(),
+                stream: false,
             };
         }
 
@@ -70,6 +76,7 @@ impl Track {
             path,
             title: name.to_string(),
             artist: String::new(),
+            stream: false,
         }
     }
 
@@ -82,6 +89,61 @@ impl Track {
     }
 }
 
+pub fn is_url(path: &str) -> bool {
+    path.starts_with("http://") || path.starts_with("https://")
+}
+
+pub fn is_m3u(path: &str) -> bool {
+    if !is_url(path) {
+        return false;
+    }
+    let base = path.split('?').next().unwrap_or(path);
+    let lower = base.to_ascii_lowercase();
+    lower.ends_with(".m3u") || lower.ends_with(".m3u8")
+}
+
+pub fn is_feed(path: &str) -> bool {
+    if !is_url(path) {
+        return false;
+    }
+    let base = path.split('?').next().unwrap_or(path);
+    let lower = base.to_ascii_lowercase();
+    lower.ends_with(".xml") || lower.ends_with(".rss") || lower.ends_with(".atom")
+}
+
+fn track_from_url(url: String) -> Track {
+    let without_query = url.split('?').next().unwrap_or(url.as_str());
+    let without_scheme = without_query
+        .strip_prefix("http://")
+        .or_else(|| without_query.strip_prefix("https://"))
+        .unwrap_or(without_query);
+
+    let host = without_scheme
+        .split('/')
+        .next()
+        .unwrap_or("stream")
+        .to_string();
+
+    let tail = without_scheme.rsplit('/').next().unwrap_or(host.as_str());
+    let stem = Path::new(tail)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(tail)
+        .trim();
+    let title = if stem.is_empty() || stem == "stream" || stem == "rest" {
+        host.clone()
+    } else {
+        stem.to_string()
+    };
+
+    Track {
+        path: url,
+        title,
+        artist: String::new(),
+        stream: true,
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Playlist {
     tracks: Vec<Track>,
@@ -89,6 +151,8 @@ pub struct Playlist {
     pos: usize,
     shuffle: bool,
     repeat: RepeatMode,
+    queue: Vec<usize>,
+    queued_idx: Option<usize>,
 }
 
 impl Playlist {
@@ -112,6 +176,9 @@ impl Playlist {
         if self.tracks.is_empty() || self.order.is_empty() {
             return None;
         }
+        if let Some(idx) = self.queued_idx {
+            return Some((self.tracks[idx].clone(), idx));
+        }
         let idx = self.order[self.pos];
         Some((self.tracks[idx].clone(), idx))
     }
@@ -119,6 +186,8 @@ impl Playlist {
     pub fn index(&self) -> Option<usize> {
         if self.order.is_empty() {
             None
+        } else if let Some(idx) = self.queued_idx {
+            Some(idx)
         } else {
             Some(self.order[self.pos])
         }
@@ -128,6 +197,14 @@ impl Playlist {
         if self.tracks.is_empty() {
             return None;
         }
+
+        if !self.queue.is_empty() {
+            let idx = self.queue.remove(0);
+            self.queued_idx = Some(idx);
+            return Some(self.tracks[idx].clone());
+        }
+
+        self.queued_idx = None;
 
         if self.repeat == RepeatMode::One {
             return Some(self.tracks[self.order[self.pos]].clone());
@@ -150,6 +227,8 @@ impl Playlist {
     }
 
     pub fn prev(&mut self) -> Option<Track> {
+        self.queued_idx = None;
+
         if self.tracks.is_empty() {
             return None;
         }
@@ -168,6 +247,7 @@ impl Playlist {
     }
 
     pub fn set_index(&mut self, idx: usize) {
+        self.queued_idx = None;
         if let Some((pos, _)) = self.order.iter().enumerate().find(|(_, i)| **i == idx) {
             self.pos = pos;
         }
@@ -203,6 +283,31 @@ impl Playlist {
 
     pub fn repeat(&self) -> RepeatMode {
         self.repeat
+    }
+
+    pub fn queue(&mut self, track_idx: usize) {
+        if track_idx < self.tracks.len() && !self.queue.contains(&track_idx) {
+            self.queue.push(track_idx);
+        }
+    }
+
+    pub fn dequeue(&mut self, track_idx: usize) -> bool {
+        if let Some(i) = self.queue.iter().position(|idx| *idx == track_idx) {
+            self.queue.remove(i);
+            return true;
+        }
+        false
+    }
+
+    pub fn queue_position(&self, track_idx: usize) -> Option<usize> {
+        self.queue
+            .iter()
+            .position(|idx| *idx == track_idx)
+            .map(|p| p + 1)
+    }
+
+    pub fn queue_len(&self) -> usize {
+        self.queue.len()
     }
 
     fn do_shuffle(&mut self) {

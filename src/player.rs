@@ -21,6 +21,10 @@ pub const EQ_FREQS: [f32; 10] = [
     70.0, 180.0, 320.0, 600.0, 1000.0, 3000.0, 6000.0, 12000.0, 14000.0, 16000.0,
 ];
 
+pub const SUPPORTED_EXTS: &[&str] = &[
+    ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".m4b", ".m4p", ".alac", ".wma", ".opus",
+];
+
 pub struct Player {
     state: Arc<Mutex<PlaybackState>>,
     _stream: cpal::Stream,
@@ -154,6 +158,15 @@ impl Player {
         state.eq_bands[band] = db.clamp(-12.0, 12.0);
     }
 
+    pub fn toggle_mono(&self) {
+        let mut state = lock_unpoison(&self.state);
+        state.mono = !state.mono;
+    }
+
+    pub fn mono(&self) -> bool {
+        lock_unpoison(&self.state).mono
+    }
+
     pub fn eq_bands(&self) -> [f32; 10] {
         lock_unpoison(&self.state).eq_bands
     }
@@ -225,6 +238,12 @@ where
         left *= gain;
         right *= gain;
 
+        if state.mono {
+            let mid = (left + right) * 0.5;
+            left = mid;
+            right = mid;
+        }
+
         state.tap.push((left + right) * 0.5);
 
         for (ch, sample) in frame.iter_mut().enumerate() {
@@ -259,6 +278,7 @@ struct PlaybackState {
     playing: bool,
     paused: bool,
     track_done: bool,
+    mono: bool,
 }
 
 impl PlaybackState {
@@ -274,6 +294,7 @@ impl PlaybackState {
             playing: false,
             paused: false,
             track_done: false,
+            mono: false,
         }
     }
 
@@ -384,6 +405,10 @@ impl DecodedTrack {
 }
 
 fn decode_audio(path: &str) -> Result<DecodedTrack> {
+    if is_url(path) {
+        return decode_audio_ffmpeg(path);
+    }
+
     if prefers_ffmpeg_decode(path) {
         if let Ok(track) = decode_audio_ffmpeg(path) {
             return Ok(track);
@@ -570,8 +595,20 @@ fn prefers_ffmpeg_decode(path: &str) -> bool {
 
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "m4a" | "aac" | "m4b" | "m4p" | "mp4"
+        "m4a" | "aac" | "m4b" | "m4p" | "mp4" | "alac" | "wma" | "opus"
     )
+}
+
+pub fn is_supported_path(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let ext = format!(".{}", ext.to_ascii_lowercase());
+    SUPPORTED_EXTS.contains(&ext.as_str())
+}
+
+fn is_url(path: &str) -> bool {
+    path.starts_with("http://") || path.starts_with("https://")
 }
 
 fn is_stream_end(err: &std::io::Error) -> bool {

@@ -1,5 +1,6 @@
 use crate::player::Player;
 use crate::playlist::{Playlist, RepeatMode};
+use crate::provider::{PlaylistInfo, Provider};
 use crate::visualizer::Visualizer;
 use anyhow::Result;
 use crossterm::cursor;
@@ -12,57 +13,203 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const PANEL_WIDTH: usize = 60;
+const PANEL_WIDTH: usize = 74;
 
-const ANSI_RESET: &str = "[0m";
-const ANSI_BORDER: &str = "[90m";
-const ANSI_TEXT: &str = "[37m";
-const ANSI_TEXT_BOLD: &str = "[1;37m";
-const ANSI_DIM: &str = "[90m";
-const ANSI_TITLE: &str = "[1;92m";
-const ANSI_GREEN: &str = "[92m";
-const ANSI_GREEN_BOLD: &str = "[1;92m";
-const ANSI_VOLUME: &str = "[32m";
-const ANSI_YELLOW: &str = "[93m";
-const ANSI_YELLOW_BOLD: &str = "[1;93m";
-const ANSI_RED: &str = "[91m";
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_BORDER: &str = "\x1b[90m";
+const ANSI_TEXT: &str = "\x1b[37m";
+const ANSI_TEXT_BOLD: &str = "\x1b[1;37m";
+const ANSI_DIM: &str = "\x1b[90m";
+const ANSI_TITLE: &str = "\x1b[1;92m";
+const ANSI_GREEN: &str = "\x1b[92m";
+const ANSI_GREEN_BOLD: &str = "\x1b[1;92m";
+const ANSI_VOLUME: &str = "\x1b[32m";
+const ANSI_YELLOW: &str = "\x1b[93m";
+const ANSI_YELLOW_BOLD: &str = "\x1b[1;93m";
+const ANSI_RED: &str = "\x1b[91m";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FocusArea {
+    Provider,
     Playlist,
     Eq,
+    Search,
 }
+
+struct EqPreset {
+    name: &'static str,
+    bands: [f32; 10],
+}
+
+const EQ_PRESETS: [EqPreset; 10] = [
+    EqPreset {
+        name: "Flat",
+        bands: [0.0; 10],
+    },
+    EqPreset {
+        name: "Rock",
+        bands: [5.0, 4.0, 2.0, -1.0, -2.0, 2.0, 4.0, 5.0, 5.0, 5.0],
+    },
+    EqPreset {
+        name: "Pop",
+        bands: [-1.0, 2.0, 4.0, 5.0, 4.0, 1.0, -1.0, -1.0, 1.0, 2.0],
+    },
+    EqPreset {
+        name: "Jazz",
+        bands: [3.0, 4.0, 2.0, 1.0, -1.0, -1.0, 1.0, 2.0, 3.0, 4.0],
+    },
+    EqPreset {
+        name: "Classical",
+        bands: [3.0, 2.0, 1.0, 0.0, -1.0, -1.0, 0.0, 2.0, 3.0, 4.0],
+    },
+    EqPreset {
+        name: "Bass Boost",
+        bands: [8.0, 6.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    },
+    EqPreset {
+        name: "Treble Boost",
+        bands: [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.0, 5.0, 6.0, 7.0],
+    },
+    EqPreset {
+        name: "Vocal",
+        bands: [-2.0, -1.0, 1.0, 4.0, 5.0, 4.0, 2.0, 0.0, -1.0, -2.0],
+    },
+    EqPreset {
+        name: "Electronic",
+        bands: [6.0, 4.0, 1.0, -1.0, -2.0, 1.0, 3.0, 4.0, 5.0, 6.0],
+    },
+    EqPreset {
+        name: "Acoustic",
+        bands: [3.0, 3.0, 2.0, 0.0, 1.0, 2.0, 3.0, 3.0, 2.0, 1.0],
+    },
+];
 
 pub struct App {
     player: Player,
     playlist: Playlist,
+    provider: Option<Box<dyn Provider>>,
+    provider_lists: Vec<PlaylistInfo>,
+    prov_cursor: usize,
+    prov_loading: bool,
     vis: Visualizer,
     focus: FocusArea,
     eq_cursor: usize,
+    eq_preset_idx: Option<usize>,
     pl_cursor: usize,
     pl_scroll: usize,
     pl_visible: usize,
     title_off: usize,
     error: Option<String>,
     quitting: bool,
+    show_keymap: bool,
+    searching: bool,
+    search_query: String,
+    search_results: Vec<usize>,
+    search_cursor: usize,
+    prev_focus: FocusArea,
 }
 
 impl App {
-    pub fn new(player: Player, playlist: Playlist) -> Self {
+    pub fn new(player: Player, playlist: Playlist, provider: Option<Box<dyn Provider>>) -> Self {
         let sample_rate = player.output_sample_rate();
-        Self {
+        let has_provider = provider.is_some();
+
+        let mut app = Self {
             player,
             playlist,
+            provider,
+            provider_lists: Vec::new(),
+            prov_cursor: 0,
+            prov_loading: false,
             vis: Visualizer::new(sample_rate),
-            focus: FocusArea::Playlist,
+            focus: if has_provider {
+                FocusArea::Provider
+            } else {
+                FocusArea::Playlist
+            },
             eq_cursor: 0,
+            eq_preset_idx: None,
             pl_cursor: 0,
             pl_scroll: 0,
             pl_visible: 5,
             title_off: 0,
             error: None,
             quitting: false,
+            show_keymap: false,
+            searching: false,
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_cursor: 0,
+            prev_focus: FocusArea::Playlist,
+        };
+
+        if app.provider.is_some() {
+            app.reload_provider_playlists();
         }
+
+        app
+    }
+
+    pub fn set_eq_preset_by_name(&mut self, name: &str) -> bool {
+        for (idx, preset) in EQ_PRESETS.iter().enumerate() {
+            if preset.name.eq_ignore_ascii_case(name) {
+                self.eq_preset_idx = Some(idx);
+                self.apply_eq_preset();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn reload_provider_playlists(&mut self) {
+        let Some(provider) = self.provider.as_ref() else {
+            return;
+        };
+        self.prov_loading = true;
+        match provider.playlists() {
+            Ok(mut lists) => {
+                lists.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                self.provider_lists = lists;
+                if self.prov_cursor >= self.provider_lists.len() {
+                    self.prov_cursor = self.provider_lists.len().saturating_sub(1);
+                }
+                self.error = None;
+            }
+            Err(err) => {
+                self.provider_lists.clear();
+                self.error = Some(err.to_string());
+            }
+        }
+        self.prov_loading = false;
+    }
+
+    fn load_provider_tracks(&mut self) {
+        let Some(provider) = self.provider.as_ref() else {
+            return;
+        };
+        if self.provider_lists.is_empty() || self.prov_cursor >= self.provider_lists.len() {
+            return;
+        }
+
+        let selected = self.provider_lists[self.prov_cursor].clone();
+        self.prov_loading = true;
+        match provider.tracks(&selected.id) {
+            Ok(tracks) => {
+                let was_empty = self.playlist.len() == 0;
+                self.playlist.add(tracks);
+                self.focus = FocusArea::Playlist;
+                if was_empty && self.playlist.len() > 0 {
+                    self.pl_cursor = 0;
+                    self.playlist.set_index(0);
+                    self.play_current_track();
+                }
+                self.error = None;
+            }
+            Err(err) => {
+                self.error = Some(err.to_string());
+            }
+        }
+        self.prov_loading = false;
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -109,7 +256,15 @@ impl App {
 
     fn draw(&mut self, stdout: &mut io::Stdout) -> Result<()> {
         let plain = self.render();
-        let frame = self.colorize_frame(&plain).replace('\n', "\r\n");
+        let colored = self.colorize_frame(&plain);
+        let term_size = terminal::size().ok().map(|(w, h)| (w as usize, h as usize));
+        let centered = if let Some((w, h)) = term_size {
+            center_frame(&colored, w, h, PANEL_WIDTH + 6)
+        } else {
+            colored
+        };
+        let frame = centered.replace('\n', "\r\n");
+
         stdout.execute(cursor::MoveTo(0, 0))?;
         stdout.execute(terminal::Clear(ClearType::All))?;
         stdout.execute(Print(frame))?;
@@ -123,8 +278,35 @@ impl App {
             return;
         }
 
+        if self.show_keymap {
+            self.show_keymap = false;
+            return;
+        }
+
+        if self.searching {
+            self.handle_search_key(key);
+            return;
+        }
+
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+        {
+            self.show_keymap = true;
+            return;
+        }
+
+        if self.focus == FocusArea::Provider {
+            self.handle_provider_key(key);
+            return;
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.quit(),
+            KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('b') | KeyCode::Char('B') => {
+                if self.provider.is_some() {
+                    self.focus = FocusArea::Provider;
+                }
+            }
             KeyCode::Char(' ') | KeyCode::Char('p') | KeyCode::Char('P') => {
                 if !self.player.is_playing() {
                     self.play_current_track();
@@ -140,7 +322,7 @@ impl App {
                     if self.eq_cursor > 0 {
                         self.eq_cursor -= 1;
                     }
-                } else {
+                } else if !self.current_track_is_stream() {
                     self.player.seek(Duration::from_secs(5), true);
                 }
             }
@@ -149,7 +331,7 @@ impl App {
                     if self.eq_cursor < 9 {
                         self.eq_cursor += 1;
                     }
-                } else {
+                } else if !self.current_track_is_stream() {
                     self.player.seek(Duration::from_secs(5), false);
                 }
             }
@@ -158,8 +340,10 @@ impl App {
             KeyCode::Char('k') | KeyCode::Char('K') => self.up_action(),
             KeyCode::Char('j') | KeyCode::Char('J') => self.down_action(),
             KeyCode::Enter => {
-                self.playlist.set_index(self.pl_cursor);
-                self.play_current_track();
+                if self.focus == FocusArea::Playlist {
+                    self.playlist.set_index(self.pl_cursor);
+                    self.play_current_track();
+                }
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
                 let next = self.player.volume() + 1.0;
@@ -188,6 +372,86 @@ impl App {
                     self.eq_cursor += 1;
                 }
             }
+            KeyCode::Char('e') | KeyCode::Char('E') => self.cycle_eq_preset(),
+            KeyCode::Char('m') | KeyCode::Char('M') => self.player.toggle_mono(),
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                if self.focus == FocusArea::Playlist && self.pl_cursor < self.playlist.len() {
+                    if !self.playlist.dequeue(self.pl_cursor) {
+                        self.playlist.queue(self.pl_cursor);
+                    }
+                }
+            }
+            KeyCode::Char('/') => self.start_search(),
+            _ => {}
+        }
+    }
+
+    fn handle_provider_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Char('Q') => self.quit(),
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                if self.prov_cursor > 0 {
+                    self.prov_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                if self.prov_cursor + 1 < self.provider_lists.len() {
+                    self.prov_cursor += 1;
+                }
+            }
+            KeyCode::Char(' ') | KeyCode::Char('p') | KeyCode::Char('P') => {
+                if !self.player.is_playing() {
+                    self.play_current_track();
+                } else {
+                    self.player.toggle_pause();
+                }
+            }
+            KeyCode::Enter => self.load_provider_tracks(),
+            KeyCode::Tab => {
+                if self.playlist.len() > 0 {
+                    self.focus = FocusArea::Playlist;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.searching = false;
+                self.focus = self.prev_focus;
+            }
+            KeyCode::Enter => {
+                if let Some(idx) = self.search_results.get(self.search_cursor).copied() {
+                    self.playlist.set_index(idx);
+                    self.pl_cursor = idx;
+                    self.adjust_scroll();
+                    self.play_current_track();
+                }
+                self.searching = false;
+                self.focus = FocusArea::Playlist;
+            }
+            KeyCode::Up => {
+                if self.search_cursor > 0 {
+                    self.search_cursor -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if self.search_cursor + 1 < self.search_results.len() {
+                    self.search_cursor += 1;
+                }
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.update_search();
+            }
+            KeyCode::Char(ch) => {
+                if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.search_query.push(ch);
+                    self.update_search();
+                }
+            }
             _ => {}
         }
     }
@@ -197,6 +461,7 @@ impl App {
             let bands = self.player.eq_bands();
             self.player
                 .set_eq_band(self.eq_cursor, bands[self.eq_cursor] + 1.0);
+            self.eq_preset_idx = None;
         } else if self.pl_cursor > 0 {
             self.pl_cursor -= 1;
             self.adjust_scroll();
@@ -208,6 +473,7 @@ impl App {
             let bands = self.player.eq_bands();
             self.player
                 .set_eq_band(self.eq_cursor, bands[self.eq_cursor] - 1.0);
+            self.eq_preset_idx = None;
         } else if self.pl_cursor + 1 < self.playlist.len() {
             self.pl_cursor += 1;
             self.adjust_scroll();
@@ -285,7 +551,69 @@ impl App {
         }
     }
 
+    fn start_search(&mut self) {
+        self.searching = true;
+        self.search_query.clear();
+        self.search_results.clear();
+        self.search_cursor = 0;
+        self.prev_focus = self.focus;
+        self.focus = FocusArea::Search;
+    }
+
+    fn update_search(&mut self) {
+        self.search_results.clear();
+        self.search_cursor = 0;
+
+        if self.search_query.is_empty() {
+            return;
+        }
+
+        let query = self.search_query.to_lowercase();
+        for (idx, track) in self.playlist.tracks().iter().enumerate() {
+            if track.display_name().to_lowercase().contains(&query) {
+                self.search_results.push(idx);
+            }
+        }
+    }
+
+    fn cycle_eq_preset(&mut self) {
+        let next = match self.eq_preset_idx {
+            Some(idx) => (idx + 1) % EQ_PRESETS.len(),
+            None => 0,
+        };
+        self.eq_preset_idx = Some(next);
+        self.apply_eq_preset();
+    }
+
+    fn apply_eq_preset(&mut self) {
+        let Some(idx) = self.eq_preset_idx else {
+            return;
+        };
+        let preset = &EQ_PRESETS[idx];
+        for (i, gain) in preset.bands.iter().enumerate() {
+            self.player.set_eq_band(i, *gain);
+        }
+    }
+
+    fn eq_preset_name(&self) -> &str {
+        match self.eq_preset_idx {
+            Some(idx) => EQ_PRESETS[idx].name,
+            None => "Custom",
+        }
+    }
+
+    fn current_track_is_stream(&self) -> bool {
+        self.playlist
+            .current()
+            .map(|(t, _)| t.stream)
+            .unwrap_or(false)
+    }
+
     fn render(&mut self) -> String {
+        if self.show_keymap {
+            return wrap_frame(self.render_keymap());
+        }
+
         let mut lines = vec![
             self.render_title(),
             self.render_track_info(),
@@ -309,6 +637,44 @@ impl App {
         }
 
         wrap_frame(lines)
+    }
+
+    fn render_keymap(&self) -> Vec<String> {
+        let mut lines = vec![
+            "K E Y M A P".to_string(),
+            String::new(),
+            "  Space      Play / Pause".to_string(),
+            "  s          Stop".to_string(),
+            "  > .        Next track".to_string(),
+            "  < ,        Previous track".to_string(),
+            "  ← →        Seek +/-5s".to_string(),
+            "  + -        Volume up/down".to_string(),
+            "  m          Toggle mono".to_string(),
+            "  e          Cycle EQ preset".to_string(),
+            "  ↑ ↓        Playlist scroll / EQ adjust".to_string(),
+            "  h l        EQ cursor left/right".to_string(),
+            "  Enter      Play selected track".to_string(),
+            "  a          Toggle queue (play next)".to_string(),
+            "  /          Search playlist".to_string(),
+            "  Tab        Toggle focus".to_string(),
+            "  Esc / b    Back to provider".to_string(),
+            "  Ctrl+K     This keymap".to_string(),
+            "  q          Quit".to_string(),
+            String::new(),
+            "Press any key to close".to_string(),
+        ];
+
+        if self.provider.is_none() {
+            lines.retain(|line| !line.contains("Back to provider"));
+        }
+
+        if lines.iter().any(|line| display_width(line) > PANEL_WIDTH) {
+            for line in &mut lines {
+                *line = truncate_to_width(line, PANEL_WIDTH);
+            }
+        }
+
+        lines
     }
 
     fn render_title(&self) -> String {
@@ -359,6 +725,8 @@ impl App {
         let left = format!("{pos_min:02}:{pos_sec:02} / {dur_min:02}:{dur_sec:02}");
         let status = if self.player.is_playing() && self.player.is_paused() {
             "⏸ Paused"
+        } else if self.player.is_playing() && self.current_track_is_stream() {
+            "● Streaming"
         } else if self.player.is_playing() {
             "▶ Playing"
         } else {
@@ -379,6 +747,14 @@ impl App {
     }
 
     fn render_seek_bar(&self) -> String {
+        if self.current_track_is_stream() && self.player.is_playing() {
+            let label = " STREAMING ";
+            let total = PANEL_WIDTH.saturating_sub(display_width(label));
+            let left = total / 2;
+            let right = total.saturating_sub(left);
+            return format!("{}{}{}", "━".repeat(left), label, "━".repeat(right));
+        }
+
         let pos = self.player.position();
         let dur = self.player.duration();
 
@@ -399,39 +775,52 @@ impl App {
         let vol = self.player.volume();
         let frac = ((vol + 30.0) / 36.0).clamp(0.0, 1.0);
 
-        let bar_w: usize = 22;
+        let bar_w: usize = 30;
         let filled = (frac * bar_w as f32) as usize;
-        format!(
+        let mut line = format!(
             "VOL {}{} {:+.1}dB",
             "█".repeat(filled),
             "░".repeat(bar_w.saturating_sub(filled)),
             vol
-        )
+        );
+        if self.player.mono() {
+            line.push_str(" [Mono]");
+        }
+        line
     }
 
     fn render_eq(&self) -> String {
         let bands = self.player.eq_bands();
-        let mut labels = vec![
-            "70".to_string(),
-            "180".to_string(),
-            "320".to_string(),
-            "600".to_string(),
-            "1k".to_string(),
-            "3k".to_string(),
-            "6k".to_string(),
-            "12k".to_string(),
-            "14k".to_string(),
-            "16k".to_string(),
+        let base_labels = [
+            "70", "180", "320", "600", "1k", "3k", "6k", "12k", "14k", "16k",
         ];
+        let mut labels = Vec::with_capacity(base_labels.len());
 
-        if self.focus == FocusArea::Eq {
-            labels[self.eq_cursor] = format!("[{:+.0}]", bands[self.eq_cursor]);
+        for (idx, base) in base_labels.iter().enumerate() {
+            let mut label = if bands[idx].abs() >= 0.5 {
+                format!("{:+.0}", bands[idx])
+            } else {
+                (*base).to_string()
+            };
+            if self.focus == FocusArea::Eq && idx == self.eq_cursor {
+                label = format!("[{label}]");
+            }
+            labels.push(label);
         }
 
-        format!("EQ  {}", labels.join(" "))
+        format!("EQ  {} [{}]", labels.join(" "), self.eq_preset_name())
     }
 
     fn render_playlist_header(&self) -> String {
+        if self.focus == FocusArea::Provider {
+            let provider_name = self
+                .provider
+                .as_ref()
+                .map(|p| p.name())
+                .unwrap_or("Provider");
+            return format!("── {provider_name} Playlists ──");
+        }
+
         let shuffle = if self.playlist.shuffled() {
             "[Shuffle*]"
         } else {
@@ -443,13 +832,54 @@ impl App {
             mode => format!("[Repeat: {mode}]"),
         };
 
-        format!("── Playlist ── {shuffle} {repeat} ──")
+        let queue = if self.playlist.queue_len() > 0 {
+            format!(" [Queue: {}]", self.playlist.queue_len())
+        } else {
+            String::new()
+        };
+
+        format!("── Playlist ── {shuffle} {repeat}{queue} ──")
     }
 
     fn render_playlist(&self) -> Vec<String> {
+        if self.focus == FocusArea::Provider {
+            if self.prov_loading {
+                let provider_name = self
+                    .provider
+                    .as_ref()
+                    .map(|p| p.name())
+                    .unwrap_or("provider");
+                return vec![format!("  Loading {provider_name}...")];
+            }
+
+            if self.provider_lists.is_empty() {
+                return vec!["  No playlists found.".to_string()];
+            }
+
+            let visible = self.pl_visible.min(self.provider_lists.len());
+            let scroll = self.prov_cursor.saturating_sub(visible.saturating_sub(1));
+            let mut out = Vec::new();
+            for idx in scroll..(scroll + visible).min(self.provider_lists.len()) {
+                let pl = &self.provider_lists[idx];
+                let prefix = if idx == self.prov_cursor { "> " } else { "  " };
+                let mut name = format!("{prefix}{} ({} tracks)", pl.name, pl.track_count);
+                if display_width(&name) > PANEL_WIDTH {
+                    let mut trimmed = truncate_to_width(&name, PANEL_WIDTH.saturating_sub(1));
+                    trimmed.push('…');
+                    name = trimmed;
+                }
+                out.push(name);
+            }
+            return out;
+        }
+
         let tracks = self.playlist.tracks();
         if tracks.is_empty() {
             return vec!["  No tracks loaded".to_string()];
+        }
+
+        if self.searching {
+            return self.render_search_results();
         }
 
         let current_idx = self.playlist.index();
@@ -469,19 +899,68 @@ impl App {
             };
 
             let mut name = tracks[idx].display_name();
-            let max_w = PANEL_WIDTH.saturating_sub(6);
+            let queue_suffix = self
+                .playlist
+                .queue_position(idx)
+                .map(|qp| format!(" [Q{qp}]"))
+                .unwrap_or_default();
+
+            let max_w = PANEL_WIDTH
+                .saturating_sub(6)
+                .saturating_sub(display_width(&queue_suffix));
             if display_width(&name) > max_w {
                 let mut trimmed = truncate_to_width(&name, max_w.saturating_sub(1));
-                trimmed.push('.');
+                trimmed.push('…');
                 name = trimmed;
             }
 
-            let line = format!("{prefix}{}. {name}", idx + 1);
+            let line = format!("{prefix}{}. {name}{queue_suffix}", idx + 1);
             if self.focus == FocusArea::Playlist
                 && idx == self.pl_cursor
                 && !(current_idx == Some(idx) && self.player.is_playing())
             {
-                out.push(format!("▶ {}", line.trim_start()));
+                out.push(format!("> {}", line.trim_start()));
+            } else {
+                out.push(line);
+            }
+        }
+
+        out
+    }
+
+    fn render_search_results(&self) -> Vec<String> {
+        if self.search_query.is_empty() {
+            return vec!["  Type to search…".to_string()];
+        }
+        if self.search_results.is_empty() {
+            return vec!["  No matches".to_string()];
+        }
+
+        let tracks = self.playlist.tracks();
+        let current_idx = self.playlist.index();
+        let visible = self.pl_visible.min(self.search_results.len());
+        let scroll = self.search_cursor.saturating_sub(visible.saturating_sub(1));
+
+        let mut out = Vec::new();
+        for j in scroll..(scroll + visible).min(self.search_results.len()) {
+            let idx = self.search_results[j];
+            let prefix = if current_idx == Some(idx) && self.player.is_playing() {
+                "▶ "
+            } else {
+                "  "
+            };
+
+            let mut name = tracks[idx].display_name();
+            let max_w = PANEL_WIDTH.saturating_sub(6);
+            if display_width(&name) > max_w {
+                let mut trimmed = truncate_to_width(&name, max_w.saturating_sub(1));
+                trimmed.push('…');
+                name = trimmed;
+            }
+
+            let line = format!("{prefix}{}. {name}", idx + 1);
+            if j == self.search_cursor {
+                out.push(format!("> {}", line.trim_start()));
             } else {
                 out.push(line);
             }
@@ -491,7 +970,27 @@ impl App {
     }
 
     fn render_help(&self) -> String {
-        "[Spc]⏯  [<>]Trk [←→]Seek [+-]Vol [Tab]Focus [Q]Quit".to_string()
+        if self.searching {
+            return format!(
+                "/ {}  ({} found)  [↑↓]Navigate [Enter]Play [Esc]Cancel",
+                self.search_query,
+                self.search_results.len()
+            );
+        }
+
+        if self.focus == FocusArea::Provider {
+            return "[↑↓]Navigate [Enter]Load [Tab]Focus [Q]Quit".to_string();
+        }
+
+        let mut help = String::from("[Spc]⏯ [<>]Trk ");
+        if !self.current_track_is_stream() {
+            help.push_str("[←→]Seek ");
+        }
+        if self.provider.is_some() {
+            help.push_str("[Esc]Back ");
+        }
+        help.push_str("[+-]Vol [m]Mono [e]EQ [a]Q [/]Src [Tab] [Q]Quit");
+        help
     }
 
     fn colorize_frame(&self, frame: &str) -> String {
@@ -537,7 +1036,7 @@ impl App {
             return content.to_string();
         }
 
-        if trimmed.starts_with("C L I A M P") {
+        if trimmed.starts_with("C L I A M P") || trimmed.starts_with("K E Y M A P") {
             return paint(ANSI_TITLE, content);
         }
 
@@ -546,7 +1045,9 @@ impl App {
         }
 
         if trimmed.starts_with("VOL ") {
-            return colorize_volume_line(content);
+            let mut vol = colorize_volume_line(content);
+            vol = vol.replace("[Mono]", &paint(ANSI_YELLOW_BOLD, "[Mono]"));
+            return vol;
         }
 
         if trimmed.starts_with("EQ  ") {
@@ -561,16 +1062,29 @@ impl App {
                     ("[Shuffle*]", ANSI_YELLOW),
                     ("[Repeat: All]", ANSI_YELLOW),
                     ("[Repeat: One]", ANSI_YELLOW),
+                    ("[Queue:", ANSI_YELLOW),
                 ],
             );
+        }
+
+        if trimmed.starts_with("── ") && trimmed.contains(" Playlists ──") {
+            return paint(ANSI_DIM, content);
         }
 
         if trimmed.starts_with("ERR:") {
             return paint(ANSI_RED, content);
         }
 
-        if trimmed.starts_with("[Spc") {
+        if trimmed.starts_with("[Spc")
+            || trimmed.starts_with("[↑↓]")
+            || trimmed.starts_with('/')
+            || trimmed.starts_with("Press ")
+        {
             return paint(ANSI_DIM, content);
+        }
+
+        if is_streaming_seek_line(trimmed) {
+            return paint(ANSI_YELLOW, content);
         }
 
         if is_spectrum_line(trimmed) {
@@ -581,19 +1095,23 @@ impl App {
             return colorize_seek_line(content);
         }
 
-        if trimmed.starts_with("▶ ") {
+        if trimmed.starts_with("▶ ") || trimmed.starts_with("> ") {
             return paint(ANSI_YELLOW_BOLD, content);
         }
 
-        colorize_tokens(
+        let mut styled = colorize_tokens(
             content,
             ANSI_TEXT,
             &[
+                ("● Streaming", ANSI_GREEN_BOLD),
                 ("▶ Playing", ANSI_GREEN_BOLD),
                 ("⏸ Paused", ANSI_YELLOW_BOLD),
                 ("■ Stopped", ANSI_DIM),
+                ("[Q", ANSI_YELLOW),
             ],
-        )
+        );
+        styled = styled.replace("[Q", &format!("{ANSI_YELLOW}[Q{ANSI_TEXT}"));
+        styled
     }
 }
 
@@ -631,6 +1149,27 @@ fn wrap_frame(lines: Vec<String>) -> String {
     out
 }
 
+fn center_frame(frame: &str, term_w: usize, term_h: usize, frame_w: usize) -> String {
+    let lines: Vec<&str> = frame.lines().collect();
+    let frame_h = lines.len();
+
+    let pad_left = term_w.saturating_sub(frame_w) / 2;
+    let pad_top = term_h.saturating_sub(frame_h) / 2;
+
+    let mut out = String::new();
+    out.push_str(&"\n".repeat(pad_top));
+
+    for (i, line) in lines.iter().enumerate() {
+        out.push_str(&" ".repeat(pad_left));
+        out.push_str(line);
+        if i + 1 < lines.len() {
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
 fn paint(color: &str, s: &str) -> String {
     format!("{color}{s}{ANSI_RESET}")
 }
@@ -646,20 +1185,19 @@ fn colorize_tokens(content: &str, base: &str, tokens: &[(&str, &str)]) -> String
 
 fn colorize_seek_line(content: &str) -> String {
     let chars: Vec<char> = content.chars().collect();
-    let cursor_idx = chars.iter().position(|ch| *ch == '●' || *ch == 'o');
+    let cursor_idx = chars.iter().position(|ch| *ch == '●');
 
     let mut out = String::new();
     for (idx, ch) in chars.iter().enumerate() {
         match *ch {
-            '●' | 'o' => out.push_str(&paint(ANSI_YELLOW, &ch.to_string())),
-            '━' | '=' => {
+            '●' => out.push_str(&paint(ANSI_YELLOW, &ch.to_string())),
+            '━' => {
                 if cursor_idx.is_some() && idx <= cursor_idx.unwrap_or(0) {
                     out.push_str(&paint(ANSI_YELLOW, &ch.to_string()));
                 } else {
                     out.push_str(&paint(ANSI_DIM, &ch.to_string()));
                 }
             }
-            '-' => out.push_str(&paint(ANSI_DIM, &ch.to_string())),
             ' ' => out.push(' '),
             _ => out.push(*ch),
         }
@@ -671,11 +1209,9 @@ fn colorize_spectrum_line(content: &str) -> String {
     let mut out = String::new();
     for ch in content.chars() {
         match ch {
-            '█' | '▇' | '▆' | '@' | '#' => out.push_str(&paint(ANSI_RED, &ch.to_string())),
-            '▅' | '▄' | '*' | '+' | '=' => out.push_str(&paint(ANSI_YELLOW, &ch.to_string())),
-            '▃' | '▂' | '▁' | '-' | ':' | '.' => {
-                out.push_str(&paint(ANSI_GREEN, &ch.to_string()))
-            }
+            '█' | '▇' | '▆' => out.push_str(&paint(ANSI_RED, &ch.to_string())),
+            '▅' | '▄' => out.push_str(&paint(ANSI_YELLOW, &ch.to_string())),
+            '▃' | '▂' | '▁' => out.push_str(&paint(ANSI_GREEN, &ch.to_string())),
             ' ' => out.push(' '),
             _ => out.push(ch),
         }
@@ -685,46 +1221,56 @@ fn colorize_spectrum_line(content: &str) -> String {
 
 fn colorize_volume_line(content: &str) -> String {
     if let Some(rest) = content.strip_prefix("VOL ") {
+        let mut mono = false;
+        let body = if let Some(stripped) = rest.strip_suffix(" [Mono]") {
+            mono = true;
+            stripped
+        } else {
+            rest
+        };
+
         let mut out = String::new();
         out.push_str(&paint(ANSI_TEXT_BOLD, "VOL"));
         out.push(' ');
 
-        for ch in rest.chars() {
+        for ch in body.chars() {
             match ch {
-                '█' | '#' => out.push_str(&paint(ANSI_VOLUME, &ch.to_string())),
-                '░' | '.' => out.push_str(&paint(ANSI_DIM, &ch.to_string())),
+                '█' => out.push_str(&paint(ANSI_VOLUME, &ch.to_string())),
+                '░' => out.push_str(&paint(ANSI_DIM, &ch.to_string())),
                 ' ' => out.push(' '),
                 _ => out.push_str(&paint(ANSI_DIM, &ch.to_string())),
             }
         }
-
+        if mono {
+            out.push(' ');
+            out.push_str(&paint(ANSI_YELLOW_BOLD, "[Mono]"));
+        }
         return out;
     }
 
-    let mut out = String::new();
-    for ch in content.chars() {
-        match ch {
-            '█' | '#' => out.push_str(&paint(ANSI_VOLUME, &ch.to_string())),
-            '░' | '.' => out.push_str(&paint(ANSI_DIM, &ch.to_string())),
-            _ => out.push(ch),
-        }
-    }
-    out
+    content.to_string()
 }
 
 fn is_seek_line(trimmed: &str) -> bool {
     let mut has_cursor = false;
     for ch in trimmed.chars() {
-        if ch == '●' || ch == 'o' {
+        if ch == '●' {
             has_cursor = true;
             continue;
         }
-        if ch == '━' || ch == '=' || ch == '-' {
+        if ch == '━' {
             continue;
         }
         return false;
     }
     has_cursor
+}
+
+fn is_streaming_seek_line(trimmed: &str) -> bool {
+    trimmed.contains("STREAMING")
+        && trimmed
+            .chars()
+            .all(|ch| ch == '━' || ch == ' ' || ch.is_ascii_uppercase())
 }
 
 fn is_spectrum_line(trimmed: &str) -> bool {
@@ -733,24 +1279,7 @@ fn is_spectrum_line(trimmed: &str) -> bool {
         if ch == ' ' {
             continue;
         }
-        if matches!(
-            ch,
-            '.' | ':'
-                | '-'
-                | '='
-                | '+'
-                | '*'
-                | '#'
-                | '@'
-                | '▁'
-                | '▂'
-                | '▃'
-                | '▄'
-                | '▅'
-                | '▆'
-                | '▇'
-                | '█'
-        ) {
+        if matches!(ch, '▁' | '▂' | '▃' | '▄' | '▅' | '▆' | '▇' | '█') {
             has_bar = true;
             continue;
         }
