@@ -1,3 +1,4 @@
+use crate::background::ParticleBackground;
 use crate::player::Player;
 use crate::playlist::{Playlist, RepeatMode};
 use crate::provider::{PlaylistInfo, Provider};
@@ -211,6 +212,7 @@ pub struct App {
     search_results: Vec<usize>,
     search_cursor: usize,
     prev_focus: FocusArea,
+    bg: ParticleBackground,
 }
 
 impl App {
@@ -246,6 +248,7 @@ impl App {
             search_results: Vec::new(),
             search_cursor: 0,
             prev_focus: FocusArea::Playlist,
+            bg: ParticleBackground::new(PANEL_WIDTH, 24),
         };
 
         if app.provider.is_some() {
@@ -641,6 +644,7 @@ impl App {
             self.next_track();
         }
         self.title_off = self.title_off.wrapping_add(1);
+        self.bg.tick();
     }
 
     fn quit(&mut self) {
@@ -800,7 +804,36 @@ impl App {
             lines.push(format!("{}: {err}", self.tr("ERR", "错误")));
         }
 
+        self.bg.resize(PANEL_WIDTH, lines.len());
+        self.apply_background(&mut lines);
         wrap_frame(lines)
+    }
+
+    fn apply_background(&mut self, lines: &mut [String]) {
+        for (y, line) in lines.iter_mut().enumerate() {
+            let mut chars: Vec<char> = line.chars().collect();
+            if chars.is_empty() {
+                continue;
+            }
+
+            let non_space = chars.iter().rposition(|ch| !ch.is_whitespace());
+            let start = match non_space {
+                Some(idx) => idx.saturating_add(8),
+                None => 0,
+            };
+
+            for x in start..chars.len().min(PANEL_WIDTH) {
+                if chars[x] != ' ' {
+                    continue;
+                }
+                let bg_ch = self.bg.ch_at(x, y);
+                if bg_ch != ' ' {
+                    chars[x] = bg_ch;
+                }
+            }
+
+            *line = chars.into_iter().collect();
+        }
     }
 
     fn render_keymap(&self) -> Vec<String> {
@@ -1347,6 +1380,10 @@ impl App {
             return paint(ANSI_DIM, content);
         }
 
+        if is_particle_line(trimmed) {
+            return colorize_particle_line(content);
+        }
+
         if is_streaming_seek_line(trimmed) {
             return paint(ANSI_YELLOW, content);
         }
@@ -1492,6 +1529,25 @@ fn colorize_spectrum_line(content: &str) -> String {
     out
 }
 
+fn colorize_particle_line(content: &str) -> String {
+    let mut out = String::new();
+    for ch in content.chars() {
+        match ch {
+            '█' => out.push_str(&paint(ANSI_GREEN_BOLD, &ch.to_string())),
+            'A'..='Z' | '0'..='9' | '@' | '#' | '$' | '%' | '&' | '*' => {
+                out.push_str(&paint(ANSI_VOLUME, &ch.to_string()))
+            }
+            'a'..='z' => out.push_str(&paint(ANSI_DIM, &ch.to_string())),
+            '✦' => out.push_str(&paint(ANSI_YELLOW_BOLD, &ch.to_string())),
+            '•' => out.push_str(&paint(ANSI_MAGENTA, &ch.to_string())),
+            '·' | '.' => out.push_str(&paint(ANSI_DIM, &ch.to_string())),
+            ' ' => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn colorize_volume_line(content: &str) -> String {
     if let Some(rest) = content
         .strip_prefix("VOL ")
@@ -1589,6 +1645,37 @@ fn is_spectrum_line(trimmed: &str) -> bool {
         return false;
     }
     has_bar
+}
+
+fn is_particle_line(trimmed: &str) -> bool {
+    let mut has_particle = false;
+    for ch in trimmed.chars() {
+        if ch == ' ' {
+            continue;
+        }
+        if matches!(
+            ch,
+            '█'
+                | 'A'..='Z'
+                | 'a'..='z'
+                | '0'..='9'
+                | '@'
+                | '#'
+                | '$'
+                | '%'
+                | '&'
+                | '*'
+                | '✦'
+                | '•'
+                | '·'
+                | '.'
+        ) {
+            has_particle = true;
+            continue;
+        }
+        return false;
+    }
+    has_particle
 }
 
 fn colors_enabled() -> bool {
