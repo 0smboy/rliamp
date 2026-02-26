@@ -34,6 +34,17 @@ This branch is synced with key upstream updates through **2026-02-25** (feature 
 - A terminal with ANSI color support.
 - `ffmpeg` in `PATH` (required for URL decoding and non-core formats such as AAC/ALAC/WMA/Opus).
 
+## Install (Homebrew / ZeroBrew)
+
+```bash
+# Homebrew
+brew tap 0smboy/rliamp https://github.com/0smboy/rliamp
+brew install 0smboy/rliamp/rliamp
+
+# ZeroBrew
+zb install 0smboy/rliamp/rliamp
+```
+
 ## Run
 
 ```bash
@@ -117,6 +128,7 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `Left` `Right` | Seek -/+5s (local tracks) |
 | `+` `-` | Volume up/down |
 | `m` | Toggle mono |
+| `g` | Toggle matrix background |
 | `e` | Cycle EQ preset |
 | `1` `2` `3` `4` `5` `6` | Apply custom EQ mode |
 | `i` | Toggle UI language (EN / ZH) |

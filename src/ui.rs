@@ -213,6 +213,7 @@ pub struct App {
     search_cursor: usize,
     prev_focus: FocusArea,
     bg: ParticleBackground,
+    bg_enabled: bool,
 }
 
 impl App {
@@ -249,6 +250,7 @@ impl App {
             search_cursor: 0,
             prev_focus: FocusArea::Playlist,
             bg: ParticleBackground::new(PANEL_WIDTH, 24),
+            bg_enabled: true,
         };
 
         if app.provider.is_some() {
@@ -288,6 +290,10 @@ impl App {
 
     fn toggle_language(&mut self) {
         self.lang = self.lang.toggle();
+    }
+
+    fn toggle_background(&mut self) {
+        self.bg_enabled = !self.bg_enabled;
     }
 
     fn apply_eq_preset_hotkey(&mut self, hotkey: char) -> bool {
@@ -395,19 +401,20 @@ impl App {
     }
 
     fn draw(&mut self, stdout: &mut io::Stdout) -> Result<()> {
-        let plain = self.render();
-        let colored = self.colorize_frame(&plain);
-        let term_size = terminal::size().ok().map(|(w, h)| (w as usize, h as usize));
-        let centered = if let Some((w, h)) = term_size {
-            center_frame(&colored, w, h, PANEL_WIDTH + 6)
+        let frame_plain = self.render();
+        let scene = if let Ok((w, h)) = terminal::size() {
+            let term_w = w as usize;
+            let term_h = h as usize;
+            self.bg.resize(term_w, term_h);
+            self.compose_scene(&frame_plain, term_w, term_h)
         } else {
-            colored
+            self.render_fallback_scene(&frame_plain)
         };
-        let frame = centered.replace('\n', "\r\n");
+        let output = scene.replace('\n', "\r\n");
 
         stdout.execute(cursor::MoveTo(0, 0))?;
         stdout.execute(terminal::Clear(ClearType::All))?;
-        stdout.execute(Print(frame))?;
+        stdout.execute(Print(output))?;
         stdout.flush()?;
         Ok(())
     }
@@ -439,6 +446,10 @@ impl App {
             self.toggle_language();
             return;
         }
+        if matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G')) {
+            self.toggle_background();
+            return;
+        }
         if matches!(
             key.code,
             KeyCode::Char('1')
@@ -467,6 +478,9 @@ impl App {
                 }
             }
             KeyCode::Char(' ') | KeyCode::Char('p') | KeyCode::Char('P') => {
+                if self.player.is_loading() {
+                    return;
+                }
                 if !self.player.is_playing() {
                     self.play_current_track();
                 } else {
@@ -559,6 +573,9 @@ impl App {
                 }
             }
             KeyCode::Char(' ') | KeyCode::Char('p') | KeyCode::Char('P') => {
+                if self.player.is_loading() {
+                    return;
+                }
                 if !self.player.is_playing() {
                     self.play_current_track();
                 } else {
@@ -640,11 +657,16 @@ impl App {
     }
 
     fn on_tick(&mut self) {
+        if let Some(err) = self.player.take_error() {
+            self.error = Some(err);
+        }
         if self.player.is_playing() && !self.player.is_paused() && self.player.track_done() {
             self.next_track();
         }
         self.title_off = self.title_off.wrapping_add(1);
-        self.bg.tick();
+        if self.bg_enabled {
+            self.bg.tick();
+        }
     }
 
     fn quit(&mut self) {
@@ -659,11 +681,8 @@ impl App {
                 self.adjust_scroll();
             }
             self.title_off = 0;
-            if let Err(err) = self.player.play(&track.path) {
-                self.error = Some(err.to_string());
-            } else {
-                self.error = None;
-            }
+            self.player.play_async(&track.path);
+            self.error = None;
         } else {
             self.player.stop();
         }
@@ -682,22 +701,16 @@ impl App {
                 self.adjust_scroll();
             }
             self.title_off = 0;
-            if let Err(err) = self.player.play(&track.path) {
-                self.error = Some(err.to_string());
-            } else {
-                self.error = None;
-            }
+            self.player.play_async(&track.path);
+            self.error = None;
         }
     }
 
     fn play_current_track(&mut self) {
         if let Some((track, _)) = self.playlist.current() {
             self.title_off = 0;
-            if let Err(err) = self.player.play(&track.path) {
-                self.error = Some(err.to_string());
-            } else {
-                self.error = None;
-            }
+            self.player.play_async(&track.path);
+            self.error = None;
         }
     }
 
@@ -804,36 +817,7 @@ impl App {
             lines.push(format!("{}: {err}", self.tr("ERR", "错误")));
         }
 
-        self.bg.resize(PANEL_WIDTH, lines.len());
-        self.apply_background(&mut lines);
         wrap_frame(lines)
-    }
-
-    fn apply_background(&mut self, lines: &mut [String]) {
-        for (y, line) in lines.iter_mut().enumerate() {
-            let mut chars: Vec<char> = line.chars().collect();
-            if chars.is_empty() {
-                continue;
-            }
-
-            let non_space = chars.iter().rposition(|ch| !ch.is_whitespace());
-            let start = match non_space {
-                Some(idx) => idx.saturating_add(8),
-                None => 0,
-            };
-
-            for x in start..chars.len().min(PANEL_WIDTH) {
-                if chars[x] != ' ' {
-                    continue;
-                }
-                let bg_ch = self.bg.ch_at(x, y);
-                if bg_ch != ' ' {
-                    chars[x] = bg_ch;
-                }
-            }
-
-            *line = chars.into_iter().collect();
-        }
     }
 
     fn render_keymap(&self) -> Vec<String> {
@@ -847,6 +831,10 @@ impl App {
             format!("  ← →        {}", self.tr("Seek +/-5s", "快进/快退 5 秒")),
             format!("  + -        {}", self.tr("Volume up/down", "音量增减")),
             format!("  m          {}", self.tr("Toggle mono", "切换单声道")),
+            format!(
+                "  g          {}",
+                self.tr("Toggle background", "切换背景动画")
+            ),
             format!(
                 "  e          {}",
                 self.tr("Cycle EQ presets", "循环切换 EQ 预设")
@@ -949,6 +937,8 @@ impl App {
         let left = format!("{pos_min:02}:{pos_sec:02} / {dur_min:02}:{dur_sec:02}");
         let status = if self.player.is_playing() && self.player.is_paused() {
             self.tr("⏸ Paused", "⏸ 暂停")
+        } else if self.player.is_loading() {
+            self.tr("… Loading", "… 载入中")
         } else if self.player.is_playing() && self.current_track_is_stream() {
             self.tr("● Streaming", "● 流媒体")
         } else if self.player.is_playing() {
@@ -1265,8 +1255,8 @@ impl App {
             line2.push_str(self.tr("[Esc]Back ", "[Esc]返回 "));
         }
         line2.push_str(self.tr(
-            "[a]Queue [/]Search [Tab]Focus [Q]Quit",
-            "[a]队列 [/]搜索 [Tab]焦点 [Q]退出",
+            "[g]BG [a]Queue [/]Search [Tab]Focus [Q]Quit",
+            "[g]背景 [a]队列 [/]搜索 [Tab]焦点 [Q]退出",
         ));
 
         vec![line1, line2]
@@ -1282,6 +1272,75 @@ impl App {
             out.push(self.colorize_line(line));
         }
         out.join("\n")
+    }
+
+    fn compose_scene(&self, frame_plain: &str, term_w: usize, term_h: usize) -> String {
+        if term_w == 0 || term_h == 0 {
+            return self.render_fallback_scene(frame_plain);
+        }
+
+        let frame_lines: Vec<&str> = frame_plain.lines().collect();
+        let frame_h = frame_lines.len();
+        let frame_w = frame_lines
+            .iter()
+            .map(|line| display_width(line))
+            .max()
+            .unwrap_or(PANEL_WIDTH + 6);
+
+        let pad_left = term_w.saturating_sub(frame_w) / 2;
+        let pad_top = term_h.saturating_sub(frame_h) / 2;
+
+        let mut out = Vec::with_capacity(term_h);
+        for y in 0..term_h {
+            let bg_line = self.render_background_line(y, term_w);
+
+            if y >= pad_top && y < pad_top.saturating_add(frame_h) {
+                let frame_line = frame_lines[y - pad_top];
+                let left_bg: String = bg_line.chars().take(pad_left).collect();
+                let right_bg: String = bg_line.chars().skip(pad_left + frame_w).collect();
+
+                let mut line = String::new();
+                line.push_str(&self.colorize_background_line(&left_bg));
+                line.push_str(&self.colorize_frame_line(frame_line));
+                line.push_str(&self.colorize_background_line(&right_bg));
+                out.push(line);
+            } else {
+                out.push(self.colorize_background_line(&bg_line));
+            }
+        }
+
+        out.join("\n")
+    }
+
+    fn render_fallback_scene(&self, frame_plain: &str) -> String {
+        self.colorize_frame(frame_plain)
+    }
+
+    fn render_background_line(&self, y: usize, width: usize) -> String {
+        if !self.bg_enabled {
+            return " ".repeat(width);
+        }
+        let mut line = String::with_capacity(width);
+        for x in 0..width {
+            line.push(self.bg.ch_at(x, y));
+        }
+        line
+    }
+
+    fn colorize_frame_line(&self, line: &str) -> String {
+        if colors_enabled() {
+            self.colorize_line(line)
+        } else {
+            line.to_string()
+        }
+    }
+
+    fn colorize_background_line(&self, line: &str) -> String {
+        if colors_enabled() {
+            colorize_particle_line(line)
+        } else {
+            line.to_string()
+        }
     }
 
     fn colorize_line(&self, line: &str) -> String {
@@ -1380,10 +1439,6 @@ impl App {
             return paint(ANSI_DIM, content);
         }
 
-        if is_particle_line(trimmed) {
-            return colorize_particle_line(content);
-        }
-
         if is_streaming_seek_line(trimmed) {
             return paint(ANSI_YELLOW, content);
         }
@@ -1408,6 +1463,8 @@ impl App {
                 ("● 流媒体", ANSI_GREEN_BOLD),
                 ("▶ Playing", ANSI_GREEN_BOLD),
                 ("▶ 播放中", ANSI_GREEN_BOLD),
+                ("… Loading", ANSI_YELLOW_BOLD),
+                ("… 载入中", ANSI_YELLOW_BOLD),
                 ("⏸ Paused", ANSI_YELLOW_BOLD),
                 ("⏸ 暂停", ANSI_YELLOW_BOLD),
                 ("■ Stopped", ANSI_DIM),
@@ -1450,27 +1507,6 @@ fn wrap_frame(lines: Vec<String>) -> String {
     out.push('╰');
     out.push_str(&"─".repeat(inner));
     out.push('╯');
-
-    out
-}
-
-fn center_frame(frame: &str, term_w: usize, term_h: usize, frame_w: usize) -> String {
-    let lines: Vec<&str> = frame.lines().collect();
-    let frame_h = lines.len();
-
-    let pad_left = term_w.saturating_sub(frame_w) / 2;
-    let pad_top = term_h.saturating_sub(frame_h) / 2;
-
-    let mut out = String::new();
-    out.push_str(&"\n".repeat(pad_top));
-
-    for (i, line) in lines.iter().enumerate() {
-        out.push_str(&" ".repeat(pad_left));
-        out.push_str(line);
-        if i + 1 < lines.len() {
-            out.push('\n');
-        }
-    }
 
     out
 }
@@ -1645,37 +1681,6 @@ fn is_spectrum_line(trimmed: &str) -> bool {
         return false;
     }
     has_bar
-}
-
-fn is_particle_line(trimmed: &str) -> bool {
-    let mut has_particle = false;
-    for ch in trimmed.chars() {
-        if ch == ' ' {
-            continue;
-        }
-        if matches!(
-            ch,
-            '█'
-                | 'A'..='Z'
-                | 'a'..='z'
-                | '0'..='9'
-                | '@'
-                | '#'
-                | '$'
-                | '%'
-                | '&'
-                | '*'
-                | '✦'
-                | '•'
-                | '·'
-                | '.'
-        ) {
-            has_particle = true;
-            continue;
-        }
-        return false;
-    }
-    has_particle
 }
 
 fn colors_enabled() -> bool {

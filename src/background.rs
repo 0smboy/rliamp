@@ -34,8 +34,8 @@ impl Drop {
         Self {
             x,
             y,
-            speed: rng.gen_range(0.45..1.45),
-            length: rng.gen_range(5..18),
+            speed: rng.gen_range(0.65..1.95),
+            length: rng.gen_range(8..26),
         }
     }
 
@@ -143,7 +143,7 @@ impl ParticleBackground {
         if self.width == 0 || self.height == 0 {
             return;
         }
-        let target = (self.width / 5).max(8);
+        let target = (self.width * 2 / 3).max(16);
         for _ in 0..target {
             self.drops.push(Drop::random(self.width, self.height));
         }
@@ -154,7 +154,7 @@ impl ParticleBackground {
         for drop in &mut self.drops {
             drop.y += drop.speed;
             if drop.y - drop.length as f32 > self.height as f32 {
-                let burst = rng.gen_range(6..12);
+                let burst = rng.gen_range(10..22);
                 for _ in 0..burst {
                     self.sparks
                         .push(Spark::new(drop.x, (self.height.saturating_sub(1)) as f32));

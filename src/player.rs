@@ -7,6 +7,7 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
 use std::time::Duration;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
@@ -73,19 +74,47 @@ impl Player {
         self.output_sample_rate
     }
 
-    pub fn play(&self, path: &str) -> Result<()> {
-        let decoded = Arc::new(decode_audio(path)?);
+    pub fn play_async(&self, path: &str) {
+        let path = path.to_string();
+        let state = self.state.clone();
+        let output_sample_rate = self.output_sample_rate;
+        let load_token = {
+            let mut state = lock_unpoison(&state);
+            state.load_token = state.load_token.wrapping_add(1);
+            state.loading = true;
+            state.last_error = None;
+            state.playing = false;
+            state.paused = false;
+            state.track_done = false;
+            state.src_pos = 0.0;
+            state.tap.clear();
+            state.load_token
+        };
 
-        let mut state = lock_unpoison(&self.state);
-        state.track = Some(decoded.clone());
-        state.src_pos = 0.0;
-        state.src_step = decoded.sample_rate as f64 / self.output_sample_rate as f64;
-        state.track_done = false;
-        state.playing = true;
-        state.paused = false;
-        state.tap.clear();
-        state.reset_filters();
-        Ok(())
+        thread::spawn(move || {
+            let decoded = decode_audio(&path).map(Arc::new);
+            let mut state = lock_unpoison(&state);
+            if state.load_token != load_token {
+                return;
+            }
+            state.loading = false;
+            match decoded {
+                Ok(track) => {
+                    state.last_error = None;
+                    apply_decoded_track(&mut state, track, output_sample_rate);
+                }
+                Err(err) => {
+                    state.track = None;
+                    state.src_pos = 0.0;
+                    state.track_done = false;
+                    state.playing = false;
+                    state.paused = false;
+                    state.tap.clear();
+                    state.reset_filters();
+                    state.last_error = Some(err.to_string());
+                }
+            }
+        });
     }
 
     pub fn toggle_pause(&self) {
@@ -97,6 +126,8 @@ impl Player {
 
     pub fn stop(&self) {
         let mut state = lock_unpoison(&self.state);
+        state.load_token = state.load_token.wrapping_add(1);
+        state.loading = false;
         state.track = None;
         state.src_pos = 0.0;
         state.track_done = false;
@@ -104,6 +135,7 @@ impl Player {
         state.paused = false;
         state.tap.clear();
         state.reset_filters();
+        state.last_error = None;
     }
 
     pub fn seek(&self, delta: Duration, backward: bool) {
@@ -175,6 +207,10 @@ impl Player {
         lock_unpoison(&self.state).playing
     }
 
+    pub fn is_loading(&self) -> bool {
+        lock_unpoison(&self.state).loading
+    }
+
     pub fn is_paused(&self) -> bool {
         lock_unpoison(&self.state).paused
     }
@@ -185,6 +221,10 @@ impl Player {
 
     pub fn samples(&self, n: usize) -> Vec<f32> {
         lock_unpoison(&self.state).tap.samples(n)
+    }
+
+    pub fn take_error(&self) -> Option<String> {
+        lock_unpoison(&self.state).last_error.take()
     }
 
     pub fn close(&self) {
@@ -267,6 +307,21 @@ fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn apply_decoded_track(
+    state: &mut PlaybackState,
+    decoded: Arc<DecodedTrack>,
+    output_sample_rate: f32,
+) {
+    state.track = Some(decoded.clone());
+    state.src_pos = 0.0;
+    state.src_step = decoded.sample_rate as f64 / output_sample_rate as f64;
+    state.track_done = false;
+    state.playing = true;
+    state.paused = false;
+    state.tap.clear();
+    state.reset_filters();
+}
+
 struct PlaybackState {
     track: Option<Arc<DecodedTrack>>,
     src_pos: f64,
@@ -279,6 +334,9 @@ struct PlaybackState {
     paused: bool,
     track_done: bool,
     mono: bool,
+    loading: bool,
+    load_token: u64,
+    last_error: Option<String>,
 }
 
 impl PlaybackState {
@@ -295,6 +353,9 @@ impl PlaybackState {
             paused: false,
             track_done: false,
             mono: false,
+            loading: false,
+            load_token: 0,
+            last_error: None,
         }
     }
 
