@@ -1,4 +1,5 @@
 # RLIAMP
+<img width="1710" height="1107" alt="Screenshot 2026-02-26 at 9 44 19 PM" src="https://github.com/user-attachments/assets/6edb229a-d1b1-4f6b-af50-7617e1608976" />
 
 RLIAMP is a Rust rewrite of [cliamp](https://github.com/bjarneo/cliamp): a retro terminal music player with a real-time visualizer, 10-band EQ, and keyboard-first controls.
 
