@@ -19,9 +19,9 @@ cleanup() {
 trap cleanup EXIT
 
 awk -v begin="$BEGIN_MARK" -v end="$END_MARK" '
-  $0 == begin { in_block = 1; next }
-  $0 == end   { in_block = 0; next }
-  !in_block   { print }
+  index($0, begin) { in_block = 1; next }
+  index($0, end)   { in_block = 0; next }
+  !in_block        { print }
 ' "$CONFIG_FILE" >"$tmp_file"
 
 mv "$tmp_file" "$CONFIG_FILE"

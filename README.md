@@ -106,29 +106,36 @@ Press `1`-`6` at runtime to apply the custom profiles:
 
 `e` still cycles all presets (built-in + custom).
 
-## Ghostty Shader Atmosphere (One-Command Import)
+## Ghostty Shader Atmosphere (Scoped to RLIAMP Run)
 
-If you run RLIAMP in Ghostty and want neon glow + distortion atmosphere (while keeping spectrum bars),
-use the bundled importer:
-
-```bash
-./scripts/ghostty-shader-import.sh
-```
-
-Milder profile:
+Ghostty shaders are full-terminal effects by design. To avoid affecting all sessions,
+use the scoped launcher (recommended):
 
 ```bash
-./scripts/ghostty-shader-import.sh balanced
+./scripts/run-rliamp-ghostty.sh /path/to/song.mp3
 ```
 
-This importer will:
-- download shaders from [`0xhckr/ghostty-shaders`](https://github.com/0xhckr/ghostty-shaders)
-- copy selected `.glsl` files into `~/.config/ghostty/shaders/rliamp/`
-- inject a managed shader block into `~/.config/ghostty/config`
+Profiles:
 
-After import, restart Ghostty (or open a new Ghostty window).
+```bash
+./scripts/run-rliamp-ghostty.sh --profile crisp /path/to/song.mp3
+./scripts/run-rliamp-ghostty.sh --profile balanced /path/to/song.mp3
+./scripts/run-rliamp-ghostty.sh --profile neon /path/to/song.mp3
+```
 
-Disable / rollback:
+What this does:
+- auto-downloads shaders from [`0xhckr/ghostty-shaders`](https://github.com/0xhckr/ghostty-shaders) on first run
+- stores them at `~/.config/ghostty/shaders/rliamp-scoped/`
+- launches Ghostty with `--custom-shader` args for that run only
+- does **not** modify `~/.config/ghostty/config` by default
+
+Optional global import (not recommended):
+
+```bash
+./scripts/ghostty-shader-import.sh --profile neon --global
+```
+
+Remove previously injected global block:
 
 ```bash
 ./scripts/ghostty-shader-disable.sh
