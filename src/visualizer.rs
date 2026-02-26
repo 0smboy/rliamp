@@ -4,12 +4,10 @@ use std::sync::Arc;
 
 const NUM_BANDS: usize = 10;
 const FFT_SIZE: usize = 2048;
-const BAR_WIDTH: usize = 5;
+const BAR_WIDTH: usize = 7;
 const BAND_EDGES: [f32; 11] = [
     20.0, 100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0, 6400.0, 12800.0, 16000.0, 20000.0,
 ];
-const BLOCKS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-
 pub struct Visualizer {
     prev: [f32; NUM_BANDS],
     sample_rate: f32,
@@ -99,16 +97,88 @@ impl Visualizer {
         bands
     }
 
-    pub fn render(&self, bands: [f32; NUM_BANDS]) -> String {
-        let mut out = String::new();
+    pub fn render_neon(&self, bands: [f32; NUM_BANDS], phase: u64) -> Vec<String> {
+        let mut spark = String::new();
+        let mut top = String::new();
+        let mut mid = String::new();
+        let mut low = String::new();
+
         for (idx, level) in bands.iter().enumerate() {
-            let block_idx = ((*level * (BLOCKS.len() - 1) as f32) as usize).min(BLOCKS.len() - 1);
-            let block = BLOCKS[block_idx];
-            out.push_str(&block.repeat(BAR_WIDTH));
-            if idx < NUM_BANDS - 1 {
-                out.push(' ');
+            spark.push_str(&sparkle_band(*level, phase, idx));
+            top.push_str(&level_band(
+                *level,
+                [0.72, 0.62, 0.52],
+                ['█', '▓', '▒'],
+                BAR_WIDTH,
+            ));
+            mid.push_str(&level_band(
+                *level,
+                [0.52, 0.38, 0.25],
+                ['█', '▓', '▒'],
+                BAR_WIDTH,
+            ));
+            low.push_str(&level_band(
+                *level,
+                [0.28, 0.18, 0.10],
+                ['█', '▒', '░'],
+                BAR_WIDTH,
+            ));
+
+            if idx + 1 < NUM_BANDS {
+                spark.push(' ');
+                top.push(' ');
+                mid.push(' ');
+                low.push(' ');
             }
         }
-        out
+
+        vec![spark, top, mid, low]
     }
+}
+
+fn level_band(level: f32, thresholds: [f32; 3], chars: [char; 3], width: usize) -> String {
+    let ch = if level >= thresholds[0] {
+        chars[0]
+    } else if level >= thresholds[1] {
+        chars[1]
+    } else if level >= thresholds[2] {
+        chars[2]
+    } else {
+        ' '
+    };
+
+    if ch == ' ' {
+        return " ".repeat(width);
+    }
+    ch.to_string().repeat(width)
+}
+
+fn sparkle_band(level: f32, phase: u64, idx: usize) -> String {
+    if level < 0.04 {
+        return " ".repeat(BAR_WIDTH);
+    }
+
+    let sparkle = if level > 0.65 {
+        if (phase + idx as u64 * 3).is_multiple_of(4) {
+            '✦'
+        } else {
+            '•'
+        }
+    } else if level > 0.28 {
+        if (phase + idx as u64 * 5).is_multiple_of(3) {
+            '•'
+        } else {
+            '·'
+        }
+    } else {
+        if (phase + idx as u64 * 7).is_multiple_of(2) {
+            '·'
+        } else {
+            '.'
+        }
+    };
+
+    let left = BAR_WIDTH / 2;
+    let right = BAR_WIDTH.saturating_sub(left + 1);
+    format!("{}{}{}", " ".repeat(left), sparkle, " ".repeat(right))
 }

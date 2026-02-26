@@ -13,7 +13,7 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const PANEL_WIDTH: usize = 74;
+const PANEL_WIDTH: usize = 92;
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BORDER: &str = "\x1b[90m";
@@ -26,6 +26,7 @@ const ANSI_GREEN_BOLD: &str = "\x1b[1;92m";
 const ANSI_VOLUME: &str = "\x1b[32m";
 const ANSI_YELLOW: &str = "\x1b[93m";
 const ANSI_YELLOW_BOLD: &str = "\x1b[1;93m";
+const ANSI_MAGENTA: &str = "\x1b[95m";
 const ANSI_RED: &str = "\x1b[91m";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -780,18 +781,20 @@ impl App {
             self.render_track_info(),
             self.render_time_status(),
             String::new(),
-            self.render_spectrum(),
+        ];
+        lines.extend(self.render_spectrum());
+        lines.extend([
             self.render_seek_bar(),
             String::new(),
             self.render_volume(),
             self.render_eq(),
             String::new(),
             self.render_playlist_header(),
-        ];
+        ]);
 
         lines.extend(self.render_playlist());
         lines.push(String::new());
-        lines.push(self.render_help());
+        lines.extend(self.render_help_lines());
 
         if let Some(err) = &self.error {
             lines.push(format!("{}: {err}", self.tr("ERR", "错误")));
@@ -929,14 +932,14 @@ impl App {
         format!("{left}{}{}", " ".repeat(gap), status)
     }
 
-    fn render_spectrum(&mut self) -> String {
+    fn render_spectrum(&mut self) -> Vec<String> {
         let bands = self.vis.analyze(&self.player.samples(2048));
-        self.vis.render(bands)
+        self.vis.render_neon(bands, self.title_off as u64)
     }
 
     fn render_seek_bar(&self) -> String {
         if self.current_track_is_stream() && self.player.is_playing() {
-            let label = " STREAMING ";
+            let label = self.tr(" STREAMING ", " 流媒体 ");
             let total = PANEL_WIDTH.saturating_sub(display_width(label));
             let left = total / 2;
             let right = total.saturating_sub(left);
@@ -966,10 +969,12 @@ impl App {
         let bar_w: usize = 30;
         let filled = (frac * bar_w as f32) as usize;
         let mut line = format!(
-            "VOL {}{} {:+.1}dB",
+            "{} {}{} {:+.1}{}",
+            self.tr("VOL", "音量"),
             "█".repeat(filled),
             "░".repeat(bar_w.saturating_sub(filled)),
-            vol
+            vol,
+            self.tr("dB", "分贝")
         );
         if self.player.mono() {
             line.push_str(self.tr(" [Mono]", " [单声道]"));
@@ -996,7 +1001,12 @@ impl App {
             labels.push(label);
         }
 
-        format!("EQ  {} [{}]", labels.join(" "), self.eq_preset_name())
+        format!(
+            "{}  {} [{}]",
+            self.tr("EQ", "均衡"),
+            labels.join(" "),
+            self.eq_preset_name()
+        )
     }
 
     fn render_playlist_header(&self) -> String {
@@ -1183,43 +1193,50 @@ impl App {
         out
     }
 
-    fn render_help(&self) -> String {
+    fn render_help_lines(&self) -> Vec<String> {
         if self.searching {
             if self.lang == UiLang::Zh {
-                return format!(
+                return vec![format!(
                     "/ {}  (找到 {} 条)  [↑↓]移动 [Enter]播放 [Esc]取消",
                     self.search_query,
                     self.search_results.len()
-                );
+                )];
             }
-            return format!(
+            return vec![format!(
                 "/ {}  ({} found)  [↑↓]Navigate [Enter]Play [Esc]Cancel",
                 self.search_query,
                 self.search_results.len()
-            );
+            )];
         }
 
         if self.focus == FocusArea::Provider {
-            return self
+            return vec![self
                 .tr(
                     "[↑↓]Navigate [Enter]Load [i]Lang [Tab]Focus [Q]Quit",
                     "[↑↓]移动 [Enter]加载 [i]语言 [Tab]焦点 [Q]退出",
                 )
-                .to_string();
+                .to_string()];
         }
 
-        let mut help = String::from(self.tr("[Spc]⏯ [<>]Trk ", "[空格]⏯ [<>]曲目 "));
+        let mut line1 = String::from(self.tr("[Spc]⏯ [<>]Trk ", "[空格]⏯ [<>]曲目 "));
         if !self.current_track_is_stream() {
-            help.push_str(self.tr("[←→]Seek ", "[←→]快进/退 "));
+            line1.push_str(self.tr("[←→]Seek ", "[←→]快进/退 "));
         }
-        if self.provider.is_some() {
-            help.push_str(self.tr("[Esc]Back ", "[Esc]返回 "));
-        }
-        help.push_str(self.tr(
-            "[+-]Vol [m]Mono [e]EQ [1-6]Mode [i]Lang [a]Q [/]Src [Tab] [Q]Quit",
-            "[+-]音量 [m]单声道 [e]EQ [1-6]模式 [i]语言 [a]队列 [/]搜索 [Tab] [Q]退出",
+        line1.push_str(self.tr(
+            "[+-]Vol [m]Mono [e]EQ [1-6]Mode [i]Lang",
+            "[+-]音量 [m]单声道 [e]EQ [1-6]模式 [i]语言",
         ));
-        help
+
+        let mut line2 = String::new();
+        if self.provider.is_some() {
+            line2.push_str(self.tr("[Esc]Back ", "[Esc]返回 "));
+        }
+        line2.push_str(self.tr(
+            "[a]Queue [/]Search [Tab]Focus [Q]Quit",
+            "[a]队列 [/]搜索 [Tab]焦点 [Q]退出",
+        ));
+
+        vec![line1, line2]
     }
 
     fn colorize_frame(&self, frame: &str) -> String {
@@ -1276,7 +1293,7 @@ impl App {
             return paint(ANSI_YELLOW, content);
         }
 
-        if trimmed.starts_with("VOL ") {
+        if trimmed.starts_with("VOL ") || trimmed.starts_with("音量 ") {
             let mut vol = colorize_volume_line(content);
             vol = vol.replace("[Mono]", &paint(ANSI_YELLOW_BOLD, "[Mono]"));
             vol = vol.replace("[单声道]", &paint(ANSI_YELLOW_BOLD, "[单声道]"));
@@ -1284,7 +1301,11 @@ impl App {
         }
 
         if trimmed.starts_with("EQ  ") || trimmed.starts_with("均衡  ") {
-            return colorize_tokens(content, ANSI_DIM, &[("EQ", ANSI_TEXT_BOLD)]);
+            return colorize_tokens(
+                content,
+                ANSI_DIM,
+                &[("EQ", ANSI_TEXT_BOLD), ("均衡", ANSI_TEXT_BOLD)],
+            );
         }
 
         if trimmed.starts_with("── Playlist ──") || trimmed.starts_with("── 播放列表 ──")
@@ -1317,6 +1338,7 @@ impl App {
 
         if trimmed.starts_with("[Spc")
             || trimmed.starts_with("[空格]")
+            || trimmed.starts_with("[a]")
             || trimmed.starts_with("[↑↓]")
             || trimmed.starts_with('/')
             || trimmed.starts_with("Press ")
@@ -1455,9 +1477,14 @@ fn colorize_spectrum_line(content: &str) -> String {
     let mut out = String::new();
     for ch in content.chars() {
         match ch {
-            '█' | '▇' | '▆' => out.push_str(&paint(ANSI_RED, &ch.to_string())),
-            '▅' | '▄' => out.push_str(&paint(ANSI_YELLOW, &ch.to_string())),
-            '▃' | '▂' | '▁' => out.push_str(&paint(ANSI_GREEN, &ch.to_string())),
+            '█' | '▉' | '▊' | '▇' | '▆' => {
+                out.push_str(&paint(ANSI_RED, &ch.to_string()))
+            }
+            '▓' | '▅' | '▄' => out.push_str(&paint(ANSI_YELLOW, &ch.to_string())),
+            '▒' | '░' | '▃' | '▂' | '▁' => {
+                out.push_str(&paint(ANSI_GREEN, &ch.to_string()))
+            }
+            '✦' | '•' | '·' | '.' => out.push_str(&paint(ANSI_MAGENTA, &ch.to_string())),
             ' ' => out.push(' '),
             _ => out.push(ch),
         }
@@ -1466,7 +1493,15 @@ fn colorize_spectrum_line(content: &str) -> String {
 }
 
 fn colorize_volume_line(content: &str) -> String {
-    if let Some(rest) = content.strip_prefix("VOL ") {
+    if let Some(rest) = content
+        .strip_prefix("VOL ")
+        .or_else(|| content.strip_prefix("音量 "))
+    {
+        let label = if content.starts_with("音量 ") {
+            "音量"
+        } else {
+            "VOL"
+        };
         let mut mono_label: Option<&str> = None;
         let body = if let Some(stripped) = rest.strip_suffix(" [Mono]") {
             mono_label = Some("[Mono]");
@@ -1479,7 +1514,7 @@ fn colorize_volume_line(content: &str) -> String {
         };
 
         let mut out = String::new();
-        out.push_str(&paint(ANSI_TEXT_BOLD, "VOL"));
+        out.push_str(&paint(ANSI_TEXT_BOLD, label));
         out.push(' ');
 
         for ch in body.chars() {
@@ -1516,10 +1551,11 @@ fn is_seek_line(trimmed: &str) -> bool {
 }
 
 fn is_streaming_seek_line(trimmed: &str) -> bool {
-    trimmed.contains("STREAMING")
-        && trimmed
-            .chars()
-            .all(|ch| ch == '━' || ch == ' ' || ch.is_ascii_uppercase())
+    let has_tag = trimmed.contains("STREAMING") || trimmed.contains("流媒体");
+    has_tag
+        && trimmed.chars().all(|ch| {
+            ch == '━' || ch == ' ' || ch.is_ascii_uppercase() || ('一'..='龥').contains(&ch)
+        })
 }
 
 fn is_spectrum_line(trimmed: &str) -> bool {
@@ -1528,7 +1564,25 @@ fn is_spectrum_line(trimmed: &str) -> bool {
         if ch == ' ' {
             continue;
         }
-        if matches!(ch, '▁' | '▂' | '▃' | '▄' | '▅' | '▆' | '▇' | '█') {
+        if matches!(
+            ch,
+            '▁' | '▂'
+                | '▃'
+                | '▄'
+                | '▅'
+                | '▆'
+                | '▇'
+                | '█'
+                | '▉'
+                | '▊'
+                | '▓'
+                | '▒'
+                | '░'
+                | '✦'
+                | '•'
+                | '·'
+                | '.'
+        ) {
             has_bar = true;
             continue;
         }
