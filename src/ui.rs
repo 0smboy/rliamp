@@ -36,51 +36,153 @@ enum FocusArea {
     Search,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiLang {
+    En,
+    Zh,
+}
+
+impl UiLang {
+    fn detect() -> Self {
+        for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
+            if let Ok(value) = env::var(key) {
+                let v = value.to_lowercase();
+                if v.starts_with("zh") || v.contains("zh_") {
+                    return UiLang::Zh;
+                }
+            }
+        }
+        UiLang::En
+    }
+
+    fn toggle(self) -> Self {
+        match self {
+            UiLang::En => UiLang::Zh,
+            UiLang::Zh => UiLang::En,
+        }
+    }
+}
+
 struct EqPreset {
-    name: &'static str,
+    id: &'static str,
+    name_en: &'static str,
+    name_zh: &'static str,
+    hotkey: Option<char>,
     bands: [f32; 10],
 }
 
-const EQ_PRESETS: [EqPreset; 10] = [
+const EQ_PRESETS: [EqPreset; 16] = [
     EqPreset {
-        name: "Flat",
+        id: "flat",
+        name_en: "Flat",
+        name_zh: "平直",
+        hotkey: None,
         bands: [0.0; 10],
     },
     EqPreset {
-        name: "Rock",
+        id: "rock",
+        name_en: "Rock",
+        name_zh: "摇滚",
+        hotkey: None,
         bands: [5.0, 4.0, 2.0, -1.0, -2.0, 2.0, 4.0, 5.0, 5.0, 5.0],
     },
     EqPreset {
-        name: "Pop",
+        id: "pop",
+        name_en: "Pop",
+        name_zh: "流行",
+        hotkey: None,
         bands: [-1.0, 2.0, 4.0, 5.0, 4.0, 1.0, -1.0, -1.0, 1.0, 2.0],
     },
     EqPreset {
-        name: "Jazz",
+        id: "jazz",
+        name_en: "Jazz",
+        name_zh: "爵士",
+        hotkey: None,
         bands: [3.0, 4.0, 2.0, 1.0, -1.0, -1.0, 1.0, 2.0, 3.0, 4.0],
     },
     EqPreset {
-        name: "Classical",
+        id: "classical",
+        name_en: "Classical",
+        name_zh: "古典",
+        hotkey: None,
         bands: [3.0, 2.0, 1.0, 0.0, -1.0, -1.0, 0.0, 2.0, 3.0, 4.0],
     },
     EqPreset {
-        name: "Bass Boost",
+        id: "bass-boost",
+        name_en: "Bass Boost",
+        name_zh: "低频增强",
+        hotkey: None,
         bands: [8.0, 6.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     },
     EqPreset {
-        name: "Treble Boost",
+        id: "treble-boost",
+        name_en: "Treble Boost",
+        name_zh: "高频增强",
+        hotkey: None,
         bands: [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 3.0, 5.0, 6.0, 7.0],
     },
     EqPreset {
-        name: "Vocal",
+        id: "vocal",
+        name_en: "Vocal",
+        name_zh: "人声",
+        hotkey: None,
         bands: [-2.0, -1.0, 1.0, 4.0, 5.0, 4.0, 2.0, 0.0, -1.0, -2.0],
     },
     EqPreset {
-        name: "Electronic",
+        id: "electronic",
+        name_en: "Electronic",
+        name_zh: "电子",
+        hotkey: None,
         bands: [6.0, 4.0, 1.0, -1.0, -2.0, 1.0, 3.0, 4.0, 5.0, 6.0],
     },
     EqPreset {
-        name: "Acoustic",
+        id: "acoustic",
+        name_en: "Acoustic",
+        name_zh: "原声",
+        hotkey: None,
         bands: [3.0, 3.0, 2.0, 0.0, 1.0, 2.0, 3.0, 3.0, 2.0, 1.0],
+    },
+    EqPreset {
+        id: "mode-1-architect",
+        name_en: "1 Architect",
+        name_zh: "1 深度思考",
+        hotkey: Some('1'),
+        bands: [-3.0, -2.0, -1.0, 0.0, 2.0, 3.0, 1.0, 1.0, 2.0, 1.0],
+    },
+    EqPreset {
+        id: "mode-2-spatial",
+        name_en: "2 Spatial HiFi",
+        name_zh: "2 宇宙空间",
+        hotkey: Some('2'),
+        bands: [2.0, 1.0, -1.0, -2.0, 0.0, 1.0, 2.0, 3.0, 4.0, 3.0],
+    },
+    EqPreset {
+        id: "mode-3-gym-drive",
+        name_en: "3 Gym / Drive",
+        name_zh: "3 多巴胺冲击",
+        hotkey: Some('3'),
+        bands: [4.0, 3.0, 0.0, 0.0, 1.0, 4.0, 3.0, 1.0, 1.0, 0.0],
+    },
+    EqPreset {
+        id: "mode-4-live-reality",
+        name_en: "4 Live Reality",
+        name_zh: "4 真实现场",
+        hotkey: Some('4'),
+        bands: [1.0, 1.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 3.0, 2.0],
+    },
+    EqPreset {
+        id: "mode-5-theta",
+        name_en: "5 Theta Sleep",
+        name_zh: "5 睡眠冥想",
+        hotkey: Some('5'),
+        bands: [1.0, 0.0, -2.0, -2.0, -1.0, -3.0, -3.0, -1.0, 1.0, 2.0],
+    },
+    EqPreset {
+        id: "mode-6-engineer",
+        name_en: "6 Engineer",
+        name_zh: "6 工程师模式",
+        hotkey: Some('6'),
+        bands: [-3.0, -2.0, -1.0, 0.0, 2.0, 2.0, 1.0, 1.0, 2.0, 1.0],
     },
 ];
 
@@ -99,6 +201,7 @@ pub struct App {
     pl_scroll: usize,
     pl_visible: usize,
     title_off: usize,
+    lang: UiLang,
     error: Option<String>,
     quitting: bool,
     show_keymap: bool,
@@ -133,6 +236,7 @@ impl App {
             pl_scroll: 0,
             pl_visible: 5,
             title_off: 0,
+            lang: UiLang::detect(),
             error: None,
             quitting: false,
             show_keymap: false,
@@ -151,8 +255,40 @@ impl App {
     }
 
     pub fn set_eq_preset_by_name(&mut self, name: &str) -> bool {
+        let short_key = if name.chars().count() == 1 {
+            name.chars().next()
+        } else {
+            None
+        };
         for (idx, preset) in EQ_PRESETS.iter().enumerate() {
-            if preset.name.eq_ignore_ascii_case(name) {
+            if preset.name_en.eq_ignore_ascii_case(name)
+                || preset.id.eq_ignore_ascii_case(name)
+                || preset.name_zh == name
+                || short_key.is_some() && preset.hotkey == short_key
+            {
+                self.eq_preset_idx = Some(idx);
+                self.apply_eq_preset();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn tr<'a>(&self, en: &'a str, zh: &'a str) -> &'a str {
+        if self.lang == UiLang::Zh {
+            zh
+        } else {
+            en
+        }
+    }
+
+    fn toggle_language(&mut self) {
+        self.lang = self.lang.toggle();
+    }
+
+    fn apply_eq_preset_hotkey(&mut self, hotkey: char) -> bool {
+        for (idx, preset) in EQ_PRESETS.iter().enumerate() {
+            if preset.hotkey == Some(hotkey) {
                 self.eq_preset_idx = Some(idx);
                 self.apply_eq_preset();
                 return true;
@@ -292,6 +428,25 @@ impl App {
             && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
         {
             self.show_keymap = true;
+            return;
+        }
+
+        if matches!(key.code, KeyCode::Char('i') | KeyCode::Char('I')) {
+            self.toggle_language();
+            return;
+        }
+        if matches!(
+            key.code,
+            KeyCode::Char('1')
+                | KeyCode::Char('2')
+                | KeyCode::Char('3')
+                | KeyCode::Char('4')
+                | KeyCode::Char('5')
+                | KeyCode::Char('6')
+        ) {
+            if let KeyCode::Char(ch) = key.code {
+                let _ = self.apply_eq_preset_hotkey(ch);
+            }
             return;
         }
 
@@ -597,8 +752,14 @@ impl App {
 
     fn eq_preset_name(&self) -> &str {
         match self.eq_preset_idx {
-            Some(idx) => EQ_PRESETS[idx].name,
-            None => "Custom",
+            Some(idx) => {
+                if self.lang == UiLang::Zh {
+                    EQ_PRESETS[idx].name_zh
+                } else {
+                    EQ_PRESETS[idx].name_en
+                }
+            }
+            None => self.tr("Custom", "自定义"),
         }
     }
 
@@ -633,7 +794,7 @@ impl App {
         lines.push(self.render_help());
 
         if let Some(err) = &self.error {
-            lines.push(format!("ERR: {err}"));
+            lines.push(format!("{}: {err}", self.tr("ERR", "错误")));
         }
 
         wrap_frame(lines)
@@ -641,31 +802,58 @@ impl App {
 
     fn render_keymap(&self) -> Vec<String> {
         let mut lines = vec![
-            "K E Y M A P".to_string(),
+            self.tr("K E Y M A P", "按 键 说 明").to_string(),
             String::new(),
-            "  Space      Play / Pause".to_string(),
-            "  s          Stop".to_string(),
-            "  > .        Next track".to_string(),
-            "  < ,        Previous track".to_string(),
-            "  ← →        Seek +/-5s".to_string(),
-            "  + -        Volume up/down".to_string(),
-            "  m          Toggle mono".to_string(),
-            "  e          Cycle EQ preset".to_string(),
-            "  ↑ ↓        Playlist scroll / EQ adjust".to_string(),
-            "  h l        EQ cursor left/right".to_string(),
-            "  Enter      Play selected track".to_string(),
-            "  a          Toggle queue (play next)".to_string(),
-            "  /          Search playlist".to_string(),
-            "  Tab        Toggle focus".to_string(),
-            "  Esc / b    Back to provider".to_string(),
-            "  Ctrl+K     This keymap".to_string(),
-            "  q          Quit".to_string(),
+            format!("  Space      {}", self.tr("Play / Pause", "播放 / 暂停")),
+            format!("  s          {}", self.tr("Stop", "停止")),
+            format!("  > .        {}", self.tr("Next track", "下一曲")),
+            format!("  < ,        {}", self.tr("Previous track", "上一曲")),
+            format!("  ← →        {}", self.tr("Seek +/-5s", "快进/快退 5 秒")),
+            format!("  + -        {}", self.tr("Volume up/down", "音量增减")),
+            format!("  m          {}", self.tr("Toggle mono", "切换单声道")),
+            format!(
+                "  e          {}",
+                self.tr("Cycle EQ presets", "循环切换 EQ 预设")
+            ),
+            format!(
+                "  1-6        {}",
+                self.tr("Quick EQ mode 1-6", "快速 EQ 模式 1-6")
+            ),
+            format!("  i          {}", self.tr("Toggle EN/ZH", "切换中英文界面")),
+            format!(
+                "  ↑ ↓        {}",
+                self.tr("Playlist scroll / EQ adjust", "播放列表滚动 / EQ 调节")
+            ),
+            format!(
+                "  h l        {}",
+                self.tr("EQ cursor left/right", "EQ 光标左/右")
+            ),
+            format!(
+                "  Enter      {}",
+                self.tr("Play selected track", "播放选中曲目")
+            ),
+            format!(
+                "  a          {}",
+                self.tr("Toggle queue (play next)", "加入/移出队列（下一首）")
+            ),
+            format!(
+                "  /          {}",
+                self.tr("Search playlist", "搜索播放列表")
+            ),
+            format!("  Tab        {}", self.tr("Toggle focus", "切换焦点")),
+            format!(
+                "  Esc / b    {}",
+                self.tr("Back to provider", "返回服务端播放列表")
+            ),
+            format!("  Ctrl+K     {}", self.tr("This keymap", "显示此按键说明")),
+            format!("  q          {}", self.tr("Quit", "退出")),
             String::new(),
-            "Press any key to close".to_string(),
+            self.tr("Press any key to close", "按任意键关闭")
+                .to_string(),
         ];
 
         if self.provider.is_none() {
-            lines.retain(|line| !line.contains("Back to provider"));
+            lines.retain(|line| !line.contains("provider") && !line.contains("服务端"));
         }
 
         if lines.iter().any(|line| display_width(line) > PANEL_WIDTH) {
@@ -687,7 +875,7 @@ impl App {
             .current()
             .map(|(track, _)| track.display_name())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "No track loaded".to_string());
+            .unwrap_or_else(|| self.tr("No track loaded", "未加载曲目").to_string());
 
         let max_w = PANEL_WIDTH.saturating_sub(4);
         let chars: Vec<char> = name.chars().collect();
@@ -724,13 +912,13 @@ impl App {
 
         let left = format!("{pos_min:02}:{pos_sec:02} / {dur_min:02}:{dur_sec:02}");
         let status = if self.player.is_playing() && self.player.is_paused() {
-            "⏸ Paused"
+            self.tr("⏸ Paused", "⏸ 暂停")
         } else if self.player.is_playing() && self.current_track_is_stream() {
-            "● Streaming"
+            self.tr("● Streaming", "● 流媒体")
         } else if self.player.is_playing() {
-            "▶ Playing"
+            self.tr("▶ Playing", "▶ 播放中")
         } else {
-            "■ Stopped"
+            self.tr("■ Stopped", "■ 已停止")
         };
 
         let gap = PANEL_WIDTH
@@ -784,7 +972,7 @@ impl App {
             vol
         );
         if self.player.mono() {
-            line.push_str(" [Mono]");
+            line.push_str(self.tr(" [Mono]", " [单声道]"));
         }
         line
     }
@@ -818,27 +1006,39 @@ impl App {
                 .as_ref()
                 .map(|p| p.name())
                 .unwrap_or("Provider");
-            return format!("── {provider_name} Playlists ──");
+            return if self.lang == UiLang::Zh {
+                format!("── {provider_name} 播放列表 ──")
+            } else {
+                format!("── {provider_name} Playlists ──")
+            };
         }
 
         let shuffle = if self.playlist.shuffled() {
-            "[Shuffle*]"
+            self.tr("[Shuffle*]", "[随机*]")
         } else {
-            "[Shuffle]"
+            self.tr("[Shuffle]", "[随机]")
         };
 
         let repeat = match self.playlist.repeat() {
-            RepeatMode::Off => "[Repeat: Off]".to_string(),
-            mode => format!("[Repeat: {mode}]"),
+            RepeatMode::Off => self.tr("[Repeat: Off]", "[循环: 关]").to_string(),
+            RepeatMode::All => self.tr("[Repeat: All]", "[循环: 全部]").to_string(),
+            RepeatMode::One => self.tr("[Repeat: One]", "[循环: 单曲]").to_string(),
         };
 
         let queue = if self.playlist.queue_len() > 0 {
-            format!(" [Queue: {}]", self.playlist.queue_len())
+            if self.lang == UiLang::Zh {
+                format!(" [队列: {}]", self.playlist.queue_len())
+            } else {
+                format!(" [Queue: {}]", self.playlist.queue_len())
+            }
         } else {
             String::new()
         };
 
-        format!("── Playlist ── {shuffle} {repeat}{queue} ──")
+        format!(
+            "── {} ── {shuffle} {repeat}{queue} ──",
+            self.tr("Playlist", "播放列表")
+        )
     }
 
     fn render_playlist(&self) -> Vec<String> {
@@ -849,11 +1049,17 @@ impl App {
                     .as_ref()
                     .map(|p| p.name())
                     .unwrap_or("provider");
-                return vec![format!("  Loading {provider_name}...")];
+                return vec![if self.lang == UiLang::Zh {
+                    format!("  正在加载 {provider_name}...")
+                } else {
+                    format!("  Loading {provider_name}...")
+                }];
             }
 
             if self.provider_lists.is_empty() {
-                return vec!["  No playlists found.".to_string()];
+                return vec![self
+                    .tr("  No playlists found.", "  未找到播放列表。")
+                    .to_string()];
             }
 
             let visible = self.pl_visible.min(self.provider_lists.len());
@@ -862,7 +1068,11 @@ impl App {
             for idx in scroll..(scroll + visible).min(self.provider_lists.len()) {
                 let pl = &self.provider_lists[idx];
                 let prefix = if idx == self.prov_cursor { "> " } else { "  " };
-                let mut name = format!("{prefix}{} ({} tracks)", pl.name, pl.track_count);
+                let mut name = if self.lang == UiLang::Zh {
+                    format!("{prefix}{} ({} 首)", pl.name, pl.track_count)
+                } else {
+                    format!("{prefix}{} ({} tracks)", pl.name, pl.track_count)
+                };
                 if display_width(&name) > PANEL_WIDTH {
                     let mut trimmed = truncate_to_width(&name, PANEL_WIDTH.saturating_sub(1));
                     trimmed.push('…');
@@ -875,7 +1085,9 @@ impl App {
 
         let tracks = self.playlist.tracks();
         if tracks.is_empty() {
-            return vec!["  No tracks loaded".to_string()];
+            return vec![self
+                .tr("  No tracks loaded", "  没有可播放曲目")
+                .to_string()];
         }
 
         if self.searching {
@@ -930,10 +1142,12 @@ impl App {
 
     fn render_search_results(&self) -> Vec<String> {
         if self.search_query.is_empty() {
-            return vec!["  Type to search…".to_string()];
+            return vec![self
+                .tr("  Type to search…", "  输入关键字开始搜索…")
+                .to_string()];
         }
         if self.search_results.is_empty() {
-            return vec!["  No matches".to_string()];
+            return vec![self.tr("  No matches", "  无匹配结果").to_string()];
         }
 
         let tracks = self.playlist.tracks();
@@ -971,6 +1185,13 @@ impl App {
 
     fn render_help(&self) -> String {
         if self.searching {
+            if self.lang == UiLang::Zh {
+                return format!(
+                    "/ {}  (找到 {} 条)  [↑↓]移动 [Enter]播放 [Esc]取消",
+                    self.search_query,
+                    self.search_results.len()
+                );
+            }
             return format!(
                 "/ {}  ({} found)  [↑↓]Navigate [Enter]Play [Esc]Cancel",
                 self.search_query,
@@ -979,17 +1200,25 @@ impl App {
         }
 
         if self.focus == FocusArea::Provider {
-            return "[↑↓]Navigate [Enter]Load [Tab]Focus [Q]Quit".to_string();
+            return self
+                .tr(
+                    "[↑↓]Navigate [Enter]Load [i]Lang [Tab]Focus [Q]Quit",
+                    "[↑↓]移动 [Enter]加载 [i]语言 [Tab]焦点 [Q]退出",
+                )
+                .to_string();
         }
 
-        let mut help = String::from("[Spc]⏯ [<>]Trk ");
+        let mut help = String::from(self.tr("[Spc]⏯ [<>]Trk ", "[空格]⏯ [<>]曲目 "));
         if !self.current_track_is_stream() {
-            help.push_str("[←→]Seek ");
+            help.push_str(self.tr("[←→]Seek ", "[←→]快进/退 "));
         }
         if self.provider.is_some() {
-            help.push_str("[Esc]Back ");
+            help.push_str(self.tr("[Esc]Back ", "[Esc]返回 "));
         }
-        help.push_str("[+-]Vol [m]Mono [e]EQ [a]Q [/]Src [Tab] [Q]Quit");
+        help.push_str(self.tr(
+            "[+-]Vol [m]Mono [e]EQ [1-6]Mode [i]Lang [a]Q [/]Src [Tab] [Q]Quit",
+            "[+-]音量 [m]单声道 [e]EQ [1-6]模式 [i]语言 [a]队列 [/]搜索 [Tab] [Q]退出",
+        ));
         help
     }
 
@@ -1036,7 +1265,10 @@ impl App {
             return content.to_string();
         }
 
-        if trimmed.starts_with("C L I A M P") || trimmed.starts_with("K E Y M A P") {
+        if trimmed.starts_with("C L I A M P")
+            || trimmed.starts_with("K E Y M A P")
+            || trimmed.starts_with("按 键 说 明")
+        {
             return paint(ANSI_TITLE, content);
         }
 
@@ -1047,38 +1279,48 @@ impl App {
         if trimmed.starts_with("VOL ") {
             let mut vol = colorize_volume_line(content);
             vol = vol.replace("[Mono]", &paint(ANSI_YELLOW_BOLD, "[Mono]"));
+            vol = vol.replace("[单声道]", &paint(ANSI_YELLOW_BOLD, "[单声道]"));
             return vol;
         }
 
-        if trimmed.starts_with("EQ  ") {
+        if trimmed.starts_with("EQ  ") || trimmed.starts_with("均衡  ") {
             return colorize_tokens(content, ANSI_DIM, &[("EQ", ANSI_TEXT_BOLD)]);
         }
 
-        if trimmed.starts_with("── Playlist ──") {
+        if trimmed.starts_with("── Playlist ──") || trimmed.starts_with("── 播放列表 ──")
+        {
             return colorize_tokens(
                 content,
                 ANSI_DIM,
                 &[
                     ("[Shuffle*]", ANSI_YELLOW),
+                    ("[随机*]", ANSI_YELLOW),
                     ("[Repeat: All]", ANSI_YELLOW),
+                    ("[循环: 全部]", ANSI_YELLOW),
                     ("[Repeat: One]", ANSI_YELLOW),
+                    ("[循环: 单曲]", ANSI_YELLOW),
                     ("[Queue:", ANSI_YELLOW),
+                    ("[队列:", ANSI_YELLOW),
                 ],
             );
         }
 
-        if trimmed.starts_with("── ") && trimmed.contains(" Playlists ──") {
+        if trimmed.starts_with("── ")
+            && (trimmed.contains(" Playlists ──") || trimmed.contains(" 播放列表 ──"))
+        {
             return paint(ANSI_DIM, content);
         }
 
-        if trimmed.starts_with("ERR:") {
+        if trimmed.starts_with("ERR:") || trimmed.starts_with("错误:") {
             return paint(ANSI_RED, content);
         }
 
         if trimmed.starts_with("[Spc")
+            || trimmed.starts_with("[空格]")
             || trimmed.starts_with("[↑↓]")
             || trimmed.starts_with('/')
             || trimmed.starts_with("Press ")
+            || trimmed.starts_with("按任意键")
         {
             return paint(ANSI_DIM, content);
         }
@@ -1104,9 +1346,13 @@ impl App {
             ANSI_TEXT,
             &[
                 ("● Streaming", ANSI_GREEN_BOLD),
+                ("● 流媒体", ANSI_GREEN_BOLD),
                 ("▶ Playing", ANSI_GREEN_BOLD),
+                ("▶ 播放中", ANSI_GREEN_BOLD),
                 ("⏸ Paused", ANSI_YELLOW_BOLD),
+                ("⏸ 暂停", ANSI_YELLOW_BOLD),
                 ("■ Stopped", ANSI_DIM),
+                ("■ 已停止", ANSI_DIM),
                 ("[Q", ANSI_YELLOW),
             ],
         );
@@ -1221,9 +1467,12 @@ fn colorize_spectrum_line(content: &str) -> String {
 
 fn colorize_volume_line(content: &str) -> String {
     if let Some(rest) = content.strip_prefix("VOL ") {
-        let mut mono = false;
+        let mut mono_label: Option<&str> = None;
         let body = if let Some(stripped) = rest.strip_suffix(" [Mono]") {
-            mono = true;
+            mono_label = Some("[Mono]");
+            stripped
+        } else if let Some(stripped) = rest.strip_suffix(" [单声道]") {
+            mono_label = Some("[单声道]");
             stripped
         } else {
             rest
@@ -1241,9 +1490,9 @@ fn colorize_volume_line(content: &str) -> String {
                 _ => out.push_str(&paint(ANSI_DIM, &ch.to_string())),
             }
         }
-        if mono {
+        if let Some(label) = mono_label {
             out.push(' ');
-            out.push_str(&paint(ANSI_YELLOW_BOLD, "[Mono]"));
+            out.push_str(&paint(ANSI_YELLOW_BOLD, label));
         }
         return out;
     }

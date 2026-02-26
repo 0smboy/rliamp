@@ -22,6 +22,8 @@ This branch is synced with key upstream updates through **2026-02-25** (feature 
 - M3U and podcast RSS feed expansion.
 - Real-time 10-band spectrum visualization (`▁▂▃▄▅▆▇█`).
 - 10-band parametric EQ with built-in presets.
+- Bilingual UI (`English` / `中文`) with runtime toggle.
+- Custom EQ quick modes (`1`-`6`) including `Engineer`.
 - Queue, search, shuffle, repeat, mono, seek, and volume controls.
 - Optional Navidrome playlist loading via environment variables.
 - Unicode-style ANSI-colored terminal UI.
@@ -91,6 +93,19 @@ Inside provider mode:
 - `Enter`: load selected remote playlist
 - `Tab`: switch focus back to local playlist/EQ view (after tracks are loaded)
 
+## Custom EQ Modes
+
+Press `1`-`6` at runtime to apply the custom profiles:
+
+- `1` Architect (deep focus)
+- `2` Spatial HiFi
+- `3` Gym / Drive
+- `4` Live Reality
+- `5` Theta Sleep
+- `6` Engineer
+
+`e` still cycles all presets (built-in + custom).
+
 ## Key Bindings
 
 | Key | Action |
@@ -103,6 +118,8 @@ Inside provider mode:
 | `+` `-` | Volume up/down |
 | `m` | Toggle mono |
 | `e` | Cycle EQ preset |
+| `1` `2` `3` `4` `5` `6` | Apply custom EQ mode |
+| `i` | Toggle UI language (EN / ZH) |
 | `a` | Toggle queue for selected track |
 | `/` | Search playlist |
 | `Tab` | Toggle focus (Playlist / EQ) |
