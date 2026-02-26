@@ -106,6 +106,34 @@ Press `1`-`6` at runtime to apply the custom profiles:
 
 `e` still cycles all presets (built-in + custom).
 
+## Ghostty Shader Atmosphere (One-Command Import)
+
+If you run RLIAMP in Ghostty and want neon glow + distortion atmosphere (while keeping spectrum bars),
+use the bundled importer:
+
+```bash
+./scripts/ghostty-shader-import.sh
+```
+
+Milder profile:
+
+```bash
+./scripts/ghostty-shader-import.sh balanced
+```
+
+This importer will:
+- download shaders from [`0xhckr/ghostty-shaders`](https://github.com/0xhckr/ghostty-shaders)
+- copy selected `.glsl` files into `~/.config/ghostty/shaders/rliamp/`
+- inject a managed shader block into `~/.config/ghostty/config`
+
+After import, restart Ghostty (or open a new Ghostty window).
+
+Disable / rollback:
+
+```bash
+./scripts/ghostty-shader-disable.sh
+```
+
 ## Key Bindings
 
 | Key | Action |
