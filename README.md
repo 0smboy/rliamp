@@ -46,6 +46,19 @@ brew install 0smboy/rliamp/rliamp
 zb install 0smboy/rliamp/rliamp
 ```
 
+## Cyber Stage Integration
+
+- Method 1 (recommended, isolated): use `arliamp` to launch a dedicated Ghostty session that does not modify global Ghostty/tmux/zsh configs.
+  - Repo: https://github.com/0smboy/arliamp
+- Method 2 (legacy, global config): use the previous `~/.config/ghostty-run-own` workflow.
+  - Files and instructions are archived at:
+    - `docs/method2-ghostty-run-own/readme.md`
+    - `docs/method2-ghostty-run-own/rliamp-veo-setup.sh`
+    - `docs/method2-ghostty-run-own/veo-toggle.sh`
+    - `docs/method2-ghostty-run-own/cyber-static.glsl`
+    - `docs/method2-ghostty-run-own/cyber-crazy.glsl`
+    - `docs/method2-ghostty-run-own/ghostty-config-snippet.conf`
+
 ## Run
 
 ```bash
