@@ -42,8 +42,13 @@ This branch is synced with key upstream updates through **2026-02-25** (feature 
 brew tap 0smboy/rliamp https://github.com/0smboy/rliamp
 brew install 0smboy/rliamp/rliamp
 
-# ZeroBrew
+# ZeroBrew (macOS: ensure Ruby 3 in PATH first)
+brew install ruby
+export PATH="/opt/homebrew/opt/ruby/bin:$PATH"
 zb install 0smboy/rliamp/rliamp
+
+# ensure installed binaries are discoverable
+export PATH="/opt/zerobrew/bin:$PATH"
 ```
 
 ## Cyber Stage Integration
