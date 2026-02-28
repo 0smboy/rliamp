@@ -3,6 +3,7 @@ use crate::player::Player;
 use crate::playlist::{Playlist, RepeatMode};
 use crate::provider::{PlaylistInfo, Provider};
 use crate::visualizer::Visualizer;
+use crate::ytdlp;
 use anyhow::Result;
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -526,8 +527,16 @@ impl App {
                 let next = self.player.volume() - 1.0;
                 self.player.set_volume(next);
             }
-            KeyCode::Char('r') | KeyCode::Char('R') => self.playlist.cycle_repeat(),
-            KeyCode::Char('z') | KeyCode::Char('Z') => self.playlist.toggle_shuffle(),
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                self.playlist.cycle_repeat();
+                self.player.clear_preload();
+                self.preload_next();
+            }
+            KeyCode::Char('z') | KeyCode::Char('Z') => {
+                self.playlist.toggle_shuffle();
+                self.player.clear_preload();
+                self.preload_next();
+            }
             KeyCode::Tab => {
                 self.focus = if self.focus == FocusArea::Playlist {
                     FocusArea::Eq
@@ -546,12 +555,15 @@ impl App {
                 }
             }
             KeyCode::Char('e') | KeyCode::Char('E') => self.cycle_eq_preset(),
+            KeyCode::Char('c') | KeyCode::Char('C') => self.vis.cycle_mode(),
             KeyCode::Char('m') | KeyCode::Char('M') => self.player.toggle_mono(),
             KeyCode::Char('a') | KeyCode::Char('A') => {
                 if self.focus == FocusArea::Playlist && self.pl_cursor < self.playlist.len() {
                     if !self.playlist.dequeue(self.pl_cursor) {
                         self.playlist.queue(self.pl_cursor);
                     }
+                    self.player.clear_preload();
+                    self.preload_next();
                 }
             }
             KeyCode::Char('/') => self.start_search(),
@@ -660,6 +672,16 @@ impl App {
         if let Some(err) = self.player.take_error() {
             self.error = Some(err);
         }
+        if self.player.take_gapless_advanced() {
+            let _ = self.playlist.next();
+            if let Some(idx) = self.playlist.index() {
+                self.pl_cursor = idx;
+                self.adjust_scroll();
+            }
+            self.title_off = 0;
+            self.error = None;
+            self.preload_next();
+        }
         if self.player.is_playing() && !self.player.is_paused() && self.player.track_done() {
             self.next_track();
         }
@@ -679,10 +701,8 @@ impl App {
             if let Some(idx) = self.playlist.index() {
                 self.pl_cursor = idx;
                 self.adjust_scroll();
+                self.play_track(track, idx);
             }
-            self.title_off = 0;
-            self.player.play_async(&track.path);
-            self.error = None;
         } else {
             self.player.stop();
         }
@@ -699,19 +719,51 @@ impl App {
             if let Some(idx) = self.playlist.index() {
                 self.pl_cursor = idx;
                 self.adjust_scroll();
+                self.play_track(track, idx);
             }
-            self.title_off = 0;
-            self.player.play_async(&track.path);
-            self.error = None;
         }
     }
 
     fn play_current_track(&mut self) {
-        if let Some((track, _)) = self.playlist.current() {
-            self.title_off = 0;
-            self.player.play_async(&track.path);
-            self.error = None;
+        if let Some((track, idx)) = self.playlist.current() {
+            self.play_track(track, idx);
         }
+    }
+
+    fn play_track(&mut self, mut track: crate::playlist::Track, track_idx: usize) {
+        self.title_off = 0;
+
+        if track.ytdlp {
+            match ytdlp::resolve_stream_url(&track.path) {
+                Ok(stream_url) => {
+                    track.path = stream_url;
+                    track.ytdlp = false;
+                    self.playlist.set_track(track_idx, track.clone());
+                }
+                Err(err) => {
+                    self.error = Some(err.to_string());
+                    return;
+                }
+            }
+        }
+
+        self.player.play_async(&track.path);
+        self.error = None;
+        self.preload_next();
+    }
+
+    fn preload_next(&mut self) {
+        let Some(next) = self.playlist.peek_next() else {
+            self.player.clear_preload();
+            return;
+        };
+
+        if next.stream || next.ytdlp {
+            self.player.clear_preload();
+            return;
+        }
+
+        self.player.preload_async(&next.path);
     }
 
     fn adjust_scroll(&mut self) {
@@ -840,6 +892,10 @@ impl App {
                 self.tr("Cycle EQ presets", "循环切换 EQ 预设")
             ),
             format!(
+                "  c          {}",
+                self.tr("Cycle visualizer mode", "切换频谱可视化模式")
+            ),
+            format!(
                 "  1-6        {}",
                 self.tr("Quick EQ mode 1-6", "快速 EQ 模式 1-6")
             ),
@@ -957,7 +1013,7 @@ impl App {
 
     fn render_spectrum(&mut self) -> Vec<String> {
         let bands = self.vis.analyze(&self.player.samples(2048));
-        self.vis.render_neon(bands, self.title_off as u64)
+        self.vis.render(bands, self.title_off as u64)
     }
 
     fn render_seek_bar(&self) -> String {
@@ -1068,8 +1124,14 @@ impl App {
             String::new()
         };
 
+        let vis = if self.lang == UiLang::Zh {
+            format!(" [可视化: {}]", self.vis.mode_name())
+        } else {
+            format!(" [Vis: {}]", self.vis.mode_name())
+        };
+
         format!(
-            "── {} ── {shuffle} {repeat}{queue} ──",
+            "── {} ── {shuffle} {repeat}{queue}{vis} ──",
             self.tr("Playlist", "播放列表")
         )
     }
@@ -1246,8 +1308,8 @@ impl App {
             line1.push_str(self.tr("[←→]Seek ", "[←→]快进/退 "));
         }
         line1.push_str(self.tr(
-            "[+-]Vol [m]Mono [e]EQ [1-6]Mode [i]Lang",
-            "[+-]音量 [m]单声道 [e]EQ [1-6]模式 [i]语言",
+            "[+-]Vol [m]Mono [e]EQ [c]Vis [1-6]Mode [i]Lang",
+            "[+-]音量 [m]单声道 [e]EQ [c]可视化 [1-6]模式 [i]语言",
         ));
 
         let mut line2 = String::new();
@@ -1414,6 +1476,8 @@ impl App {
                     ("[循环: 单曲]", ANSI_YELLOW),
                     ("[Queue:", ANSI_YELLOW),
                     ("[队列:", ANSI_YELLOW),
+                    ("[Vis:", ANSI_YELLOW),
+                    ("[可视化:", ANSI_YELLOW),
                 ],
             );
         }

@@ -77,16 +77,18 @@ impl Player {
     pub fn play_async(&self, path: &str) {
         let path = path.to_string();
         let state = self.state.clone();
-        let output_sample_rate = self.output_sample_rate;
         let load_token = {
             let mut state = lock_unpoison(&state);
             state.load_token = state.load_token.wrapping_add(1);
+            state.preload_token = state.preload_token.wrapping_add(1);
             state.loading = true;
             state.last_error = None;
             state.playing = false;
             state.paused = false;
             state.track_done = false;
             state.src_pos = 0.0;
+            state.preloaded = None;
+            state.gapless_advanced = false;
             state.tap.clear();
             state.load_token
         };
@@ -101,7 +103,7 @@ impl Player {
             match decoded {
                 Ok(track) => {
                     state.last_error = None;
-                    apply_decoded_track(&mut state, track, output_sample_rate);
+                    apply_decoded_track(&mut state, track);
                 }
                 Err(err) => {
                     state.track = None;
@@ -117,6 +119,39 @@ impl Player {
         });
     }
 
+    pub fn preload_async(&self, path: &str) {
+        let path = path.to_string();
+        let state = self.state.clone();
+        let (load_token, preload_token) = {
+            let mut state = lock_unpoison(&state);
+            state.preload_token = state.preload_token.wrapping_add(1);
+            (state.load_token, state.preload_token)
+        };
+
+        thread::spawn(move || {
+            let decoded = decode_audio(&path).map(Arc::new).ok();
+            let mut state = lock_unpoison(&state);
+            if state.load_token != load_token || state.preload_token != preload_token {
+                return;
+            }
+            state.preloaded = decoded;
+        });
+    }
+
+    pub fn clear_preload(&self) {
+        let mut state = lock_unpoison(&self.state);
+        state.preload_token = state.preload_token.wrapping_add(1);
+        state.preloaded = None;
+        state.gapless_advanced = false;
+    }
+
+    pub fn take_gapless_advanced(&self) -> bool {
+        let mut state = lock_unpoison(&self.state);
+        let advanced = state.gapless_advanced;
+        state.gapless_advanced = false;
+        advanced
+    }
+
     pub fn toggle_pause(&self) {
         let mut state = lock_unpoison(&self.state);
         if state.playing {
@@ -127,12 +162,15 @@ impl Player {
     pub fn stop(&self) {
         let mut state = lock_unpoison(&self.state);
         state.load_token = state.load_token.wrapping_add(1);
+        state.preload_token = state.preload_token.wrapping_add(1);
         state.loading = false;
         state.track = None;
+        state.preloaded = None;
         state.src_pos = 0.0;
         state.track_done = false;
         state.playing = false;
         state.paused = false;
+        state.gapless_advanced = false;
         state.tap.clear();
         state.reset_filters();
         state.last_error = None;
@@ -307,14 +345,10 @@ fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn apply_decoded_track(
-    state: &mut PlaybackState,
-    decoded: Arc<DecodedTrack>,
-    output_sample_rate: f32,
-) {
+fn apply_decoded_track(state: &mut PlaybackState, decoded: Arc<DecodedTrack>) {
     state.track = Some(decoded.clone());
     state.src_pos = 0.0;
-    state.src_step = decoded.sample_rate as f64 / output_sample_rate as f64;
+    state.src_step = decoded.sample_rate as f64 / state.output_sample_rate as f64;
     state.track_done = false;
     state.playing = true;
     state.paused = false;
@@ -323,7 +357,9 @@ fn apply_decoded_track(
 }
 
 struct PlaybackState {
+    output_sample_rate: f32,
     track: Option<Arc<DecodedTrack>>,
+    preloaded: Option<Arc<DecodedTrack>>,
     src_pos: f64,
     src_step: f64,
     volume_db: f32,
@@ -336,13 +372,17 @@ struct PlaybackState {
     mono: bool,
     loading: bool,
     load_token: u64,
+    preload_token: u64,
+    gapless_advanced: bool,
     last_error: Option<String>,
 }
 
 impl PlaybackState {
     fn new(output_sample_rate: f32) -> Self {
         Self {
+            output_sample_rate,
             track: None,
+            preloaded: None,
             src_pos: 0.0,
             src_step: 1.0,
             volume_db: 0.0,
@@ -355,6 +395,8 @@ impl PlaybackState {
             mono: false,
             loading: false,
             load_token: 0,
+            preload_token: 0,
+            gapless_advanced: false,
             last_error: None,
         }
     }
@@ -370,28 +412,57 @@ impl PlaybackState {
             return (0.0, 0.0);
         }
 
-        let Some(track) = self.track.as_ref() else {
-            return (0.0, 0.0);
+        loop {
+            let Some(track_frames) = self.track.as_ref().map(|track| track.frames) else {
+                return (0.0, 0.0);
+            };
+
+            if track_frames == 0 {
+                if self.advance_to_preloaded() {
+                    continue;
+                }
+                self.track_done = true;
+                return (0.0, 0.0);
+            }
+
+            let last_frame = track_frames.saturating_sub(1) as f64;
+            if self.src_pos >= last_frame {
+                if self.advance_to_preloaded() {
+                    continue;
+                }
+                self.track_done = true;
+                return (0.0, 0.0);
+            }
+
+            let out = self
+                .track
+                .as_ref()
+                .map(|track| track.sample_at(self.src_pos))
+                .unwrap_or((0.0, 0.0));
+            self.src_pos += self.src_step;
+
+            if self.src_pos >= last_frame && !self.advance_to_preloaded() {
+                self.track_done = true;
+            }
+
+            return out;
+        }
+    }
+
+    fn advance_to_preloaded(&mut self) -> bool {
+        let Some(next) = self.preloaded.take() else {
+            return false;
         };
 
-        if track.frames == 0 {
-            self.track_done = true;
-            return (0.0, 0.0);
-        }
-
-        if self.src_pos >= track.frames.saturating_sub(1) as f64 {
-            self.track_done = true;
-            return (0.0, 0.0);
-        }
-
-        let out = track.sample_at(self.src_pos);
-        self.src_pos += self.src_step;
-
-        if self.src_pos >= track.frames.saturating_sub(1) as f64 {
-            self.track_done = true;
-        }
-
-        out
+        self.track = Some(next.clone());
+        self.src_pos = 0.0;
+        self.src_step = next.sample_rate as f64 / self.output_sample_rate as f64;
+        self.track_done = false;
+        self.playing = true;
+        self.paused = false;
+        self.reset_filters();
+        self.gapless_advanced = true;
+        true
     }
 }
 
@@ -476,7 +547,14 @@ fn decode_audio(path: &str) -> Result<DecodedTrack> {
         }
     }
 
-    decode_audio_symphonia(path)
+    match decode_audio_symphonia(path) {
+        Ok(track) => Ok(track),
+        Err(symphonia_err) => decode_audio_ffmpeg(path).map_err(|ffmpeg_err| {
+            anyhow!(
+                "decode failed with symphonia ({symphonia_err}); ffmpeg fallback also failed ({ffmpeg_err})"
+            )
+        }),
+    }
 }
 
 fn decode_audio_symphonia(path: &str) -> Result<DecodedTrack> {

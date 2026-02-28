@@ -112,6 +112,7 @@ impl Provider for NavidromeClient {
                     title: entry.title,
                     artist: entry.artist.unwrap_or_default(),
                     stream: true,
+                    ytdlp: false,
                 });
             }
         }

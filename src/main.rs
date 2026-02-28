@@ -6,11 +6,12 @@ mod playlist;
 mod provider;
 mod ui;
 mod visualizer;
+mod ytdlp;
 
 use anyhow::{anyhow, Context, Result};
 use glob::glob;
 use navidrome::NavidromeClient;
-use playlist::{is_feed, is_m3u, is_url, Playlist, Track};
+use playlist::{is_feed, is_m3u, is_url, is_ytdl, Playlist, Track};
 use provider::Provider;
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -24,7 +25,7 @@ fn run() -> Result<()> {
 
     if args.is_empty() && provider.is_none() {
         return Err(anyhow!(
-            "usage: rliamp <file|folder|url> [...] or configure a provider via ENV\n\nexamples:\n  rliamp song.mp3\n  rliamp ~/Music\n  rliamp https://example.com/stream.m3u\n\nprovider env (Navidrome):\n  NAVIDROME_URL NAVIDROME_USER NAVIDROME_PASS"
+            "usage: rliamp <file|folder|url> [...] or configure a provider via ENV\n\nexamples:\n  rliamp song.mp3\n  rliamp ~/Music\n  rliamp https://example.com/stream.m3u\n  rliamp https://soundcloud.com/user/sets/playlist\n\nprovider env (Navidrome):\n  NAVIDROME_URL NAVIDROME_USER NAVIDROME_PASS\n\noptional tools:\n  yt-dlp (for SoundCloud/YouTube/Bandcamp URLs)"
         ));
     }
 
@@ -40,6 +41,11 @@ fn run() -> Result<()> {
             } else if is_m3u(&arg) {
                 let streams = resolve_m3u(&arg).with_context(|| format!("resolving m3u: {arg}"))?;
                 url_tracks.extend(streams);
+            } else if is_ytdl(&arg) {
+                feed_tracks.extend(
+                    ytdlp::resolve_collection(&arg)
+                        .with_context(|| format!("resolving yt-dlp collection: {arg}"))?,
+                );
             } else {
                 url_tracks.push(arg);
             }
@@ -226,6 +232,7 @@ fn resolve_feed(url: &str) -> Result<Vec<Track>> {
                             },
                             artist: channel_title.clone(),
                             stream: true,
+                            ytdlp: false,
                         });
                     }
                     in_item = false;

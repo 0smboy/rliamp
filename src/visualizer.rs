@@ -14,6 +14,13 @@ pub struct Visualizer {
     fft: Arc<dyn Fft<f32>>,
     buffer: Vec<Complex<f32>>,
     scratch: Vec<Complex<f32>>,
+    mode: VisualizerMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualizerMode {
+    Neon,
+    Bricks,
 }
 
 impl Visualizer {
@@ -28,6 +35,21 @@ impl Visualizer {
             fft,
             buffer: vec![Complex::new(0.0, 0.0); FFT_SIZE],
             scratch: vec![Complex::new(0.0, 0.0); scratch_len],
+            mode: VisualizerMode::Neon,
+        }
+    }
+
+    pub fn cycle_mode(&mut self) {
+        self.mode = match self.mode {
+            VisualizerMode::Neon => VisualizerMode::Bricks,
+            VisualizerMode::Bricks => VisualizerMode::Neon,
+        };
+    }
+
+    pub fn mode_name(&self) -> &str {
+        match self.mode {
+            VisualizerMode::Neon => "Neon",
+            VisualizerMode::Bricks => "Bricks",
         }
     }
 
@@ -97,7 +119,14 @@ impl Visualizer {
         bands
     }
 
-    pub fn render_neon(&self, bands: [f32; NUM_BANDS], phase: u64) -> Vec<String> {
+    pub fn render(&self, bands: [f32; NUM_BANDS], phase: u64) -> Vec<String> {
+        match self.mode {
+            VisualizerMode::Neon => self.render_neon(bands, phase),
+            VisualizerMode::Bricks => self.render_bricks(bands),
+        }
+    }
+
+    fn render_neon(&self, bands: [f32; NUM_BANDS], phase: u64) -> Vec<String> {
         let mut spark = String::new();
         let mut top = String::new();
         let mut mid = String::new();
@@ -133,6 +162,34 @@ impl Visualizer {
         }
 
         vec![spark, top, mid, low]
+    }
+
+    fn render_bricks(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
+        const ROWS: usize = 4;
+        let mut lines = vec![String::new(); ROWS];
+        let thresholds = [0.72, 0.50, 0.30, 0.14];
+
+        for (row, threshold) in thresholds.iter().enumerate() {
+            for (idx, level) in bands.iter().enumerate() {
+                let glyph = if *level >= *threshold {
+                    if row == 0 {
+                        '█'
+                    } else if row == 1 {
+                        '▓'
+                    } else {
+                        '▄'
+                    }
+                } else {
+                    ' '
+                };
+                lines[row].push_str(&glyph.to_string().repeat(BAR_WIDTH));
+                if idx + 1 < NUM_BANDS {
+                    lines[row].push(' ');
+                }
+            }
+        }
+
+        lines
     }
 }
 

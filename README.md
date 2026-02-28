@@ -5,7 +5,7 @@ RLIAMP is a Rust rewrite of [cliamp](https://github.com/bjarneo/cliamp): a retro
 
 ## Upstream Sync Status
 
-This branch is synced with key upstream updates through **2026-02-25** (feature window from `951e5b1` to `a326ef6`) for:
+This branch is synced with key upstream updates through **2026-02-27** (feature window from `951e5b1` to `be82295`) for:
 
 - recursive folder scanning
 - wider/centered UI refresh
@@ -14,6 +14,10 @@ This branch is synced with key upstream updates through **2026-02-25** (feature 
 - EQ presets
 - mono output toggle
 - URL / M3U / podcast RSS input handling
+- gapless playback with automatic next-track preload
+- yt-dlp input support (SoundCloud / YouTube / Bandcamp)
+- visualizer mode toggle (`Neon` / `Bricks`)
+- ffmpeg fallback decode when Symphonia fails (including unsupported WAV variants)
 - Navidrome provider integration (`NAVIDROME_URL` / `NAVIDROME_USER` / `NAVIDROME_PASS`)
 
 ## Features
@@ -21,7 +25,9 @@ This branch is synced with key upstream updates through **2026-02-25** (feature 
 - Local playback: `mp3`, `wav`, `flac`, `ogg`, `m4a`, `aac`, `m4b`, `m4p`, `alac`, `wma`, `opus`.
 - URL playback for direct HTTP/HTTPS audio links.
 - M3U and podcast RSS feed expansion.
-- Real-time 10-band spectrum visualization (`▁▂▃▄▅▆▇█`).
+- SoundCloud / YouTube / Bandcamp URL support via `yt-dlp`.
+- Gapless playback for local file queues (auto-preload next track).
+- Real-time 10-band spectrum visualization with two modes (`Neon`, `Bricks`).
 - 10-band parametric EQ with built-in presets.
 - Bilingual UI (`English` / `中文`) with runtime toggle.
 - Custom EQ quick modes (`1`-`6`) including `Engineer`.
@@ -33,7 +39,8 @@ This branch is synced with key upstream updates through **2026-02-25** (feature 
 
 - Rust toolchain (`cargo`).
 - A terminal with ANSI color support.
-- `ffmpeg` in `PATH` (required for URL decoding and non-core formats such as AAC/ALAC/WMA/Opus).
+- `ffmpeg` in `PATH` (required for URL decoding and non-core formats such as AAC/ALAC/WMA/Opus, and fallback decode).
+- `yt-dlp` in `PATH` (required only for SoundCloud / YouTube / Bandcamp URLs).
 
 ## Install (Homebrew / ZeroBrew)
 
@@ -78,6 +85,11 @@ cargo run -- /path/to/Music
 cargo run -- "https://example.com/song.mp3"
 cargo run -- "https://example.com/radio.m3u"
 cargo run -- "https://example.com/podcast/feed.xml"
+
+# SoundCloud / YouTube / Bandcamp (requires yt-dlp)
+cargo run -- "https://soundcloud.com/user/sets/playlist"
+cargo run -- "https://www.youtube.com/watch?v=VIDEO_ID"
+cargo run -- "https://artist.bandcamp.com/album/album-name"
 
 # provider mode (no file arguments required)
 NAVIDROME_URL="https://navidrome.example.com" \
@@ -149,6 +161,7 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `m` | Toggle mono |
 | `g` | Toggle matrix background |
 | `e` | Cycle EQ preset |
+| `c` | Cycle visualizer mode (Neon / Bricks) |
 | `1` `2` `3` `4` `5` `6` | Apply custom EQ mode |
 | `i` | Toggle UI language (EN / ZH) |
 | `a` | Toggle queue for selected track |

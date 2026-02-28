@@ -1,6 +1,7 @@
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use std::path::Path;
+use urlencoding::decode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepeatMode {
@@ -42,6 +43,7 @@ pub struct Track {
     pub title: String,
     pub artist: String,
     pub stream: bool,
+    pub ytdlp: bool,
 }
 
 impl Track {
@@ -69,6 +71,7 @@ impl Track {
                 title: title.trim().to_string(),
                 artist: artist.trim().to_string(),
                 stream: false,
+                ytdlp: false,
             };
         }
 
@@ -77,6 +80,7 @@ impl Track {
             title: name.to_string(),
             artist: String::new(),
             stream: false,
+            ytdlp: false,
         }
     }
 
@@ -91,6 +95,34 @@ impl Track {
 
 pub fn is_url(path: &str) -> bool {
     path.starts_with("http://") || path.starts_with("https://")
+}
+
+pub fn is_ytdl(path: &str) -> bool {
+    if !is_url(path) {
+        return false;
+    }
+
+    let without_scheme = path
+        .strip_prefix("http://")
+        .or_else(|| path.strip_prefix("https://"))
+        .unwrap_or(path);
+    let host_port = without_scheme.split('/').next().unwrap_or_default();
+    if host_port.is_empty() {
+        return false;
+    }
+    let host = host_port
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches("www.")
+        .trim_start_matches("m.")
+        .to_ascii_lowercase();
+
+    matches!(
+        host.as_str(),
+        "soundcloud.com" | "youtube.com" | "youtu.be" | "music.youtube.com" | "bandcamp.com"
+    ) || host.ends_with(".bandcamp.com")
 }
 
 pub fn is_m3u(path: &str) -> bool {
@@ -125,15 +157,23 @@ fn track_from_url(url: String) -> Track {
         .to_string();
 
     let tail = without_scheme.rsplit('/').next().unwrap_or(host.as_str());
+    let decoded_tail = decode(tail)
+        .map(|v| v.into_owned())
+        .unwrap_or_else(|_| tail.to_string());
     let stem = Path::new(tail)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(tail)
         .trim();
+    let decoded_stem = Path::new(decoded_tail.as_str())
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(decoded_tail.as_str())
+        .trim();
     let title = if stem.is_empty() || stem == "stream" || stem == "rest" {
         host.clone()
     } else {
-        stem.to_string()
+        decoded_stem.replace('-', " ")
     };
 
     Track {
@@ -141,6 +181,7 @@ fn track_from_url(url: String) -> Track {
         title,
         artist: String::new(),
         stream: true,
+        ytdlp: false,
     }
 }
 
@@ -308,6 +349,42 @@ impl Playlist {
 
     pub fn queue_len(&self) -> usize {
         self.queue.len()
+    }
+
+    pub fn set_track(&mut self, idx: usize, track: Track) {
+        if idx < self.tracks.len() {
+            self.tracks[idx] = track;
+        }
+    }
+
+    pub fn peek_next(&self) -> Option<Track> {
+        if self.tracks.is_empty() || self.order.is_empty() {
+            return None;
+        }
+
+        if let Some(next_queued) = self.queue.first().copied() {
+            return self.tracks.get(next_queued).cloned();
+        }
+
+        if self.repeat == RepeatMode::One {
+            if let Some(idx) = self.queued_idx {
+                return self.tracks.get(idx).cloned();
+            }
+            return self.tracks.get(self.order[self.pos]).cloned();
+        }
+
+        if self.pos + 1 < self.order.len() {
+            return self.tracks.get(self.order[self.pos + 1]).cloned();
+        }
+
+        if self.repeat == RepeatMode::All && !self.shuffle {
+            return self
+                .order
+                .first()
+                .and_then(|idx| self.tracks.get(*idx).cloned());
+        }
+
+        None
     }
 
     fn do_shuffle(&mut self) {
