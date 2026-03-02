@@ -377,6 +377,95 @@ impl Playlist {
         }
     }
 
+    pub fn remove_at(&mut self, idx: usize) -> bool {
+        if idx >= self.tracks.len() {
+            return false;
+        }
+
+        let current_before = if self.order.is_empty() {
+            None
+        } else {
+            Some(self.order[self.pos])
+        };
+
+        self.tracks.remove(idx);
+        self.order.retain(|track_idx| *track_idx != idx);
+        for track_idx in &mut self.order {
+            if *track_idx > idx {
+                *track_idx -= 1;
+            }
+        }
+
+        if let Some(queued) = self.queued_idx {
+            self.queued_idx = if queued == idx {
+                None
+            } else if queued > idx {
+                Some(queued - 1)
+            } else {
+                Some(queued)
+            };
+        }
+
+        let mut new_queue = Vec::with_capacity(self.queue.len());
+        for queued in self.queue.iter().copied() {
+            if queued == idx {
+                continue;
+            }
+            if queued > idx {
+                new_queue.push(queued - 1);
+            } else {
+                new_queue.push(queued);
+            }
+        }
+        self.queue = new_queue;
+
+        if self.order.is_empty() {
+            self.pos = 0;
+            self.queued_idx = None;
+            self.queue.clear();
+            return true;
+        }
+
+        if let Some(cur) = current_before {
+            if cur == idx {
+                if self.pos >= self.order.len() {
+                    self.pos = self.order.len() - 1;
+                }
+            } else {
+                let target = if cur > idx { cur - 1 } else { cur };
+                if let Some(new_pos) = self.order.iter().position(|track_idx| *track_idx == target)
+                {
+                    self.pos = new_pos;
+                } else if self.pos >= self.order.len() {
+                    self.pos = self.order.len() - 1;
+                }
+            }
+        } else if self.pos >= self.order.len() {
+            self.pos = self.order.len() - 1;
+        }
+
+        true
+    }
+
+    pub fn remove_queue_at(&mut self, queue_pos: usize) -> bool {
+        if queue_pos >= self.queue.len() {
+            return false;
+        }
+        self.queue.remove(queue_pos);
+        true
+    }
+
+    pub fn clear_queue(&mut self) {
+        self.queue.clear();
+    }
+
+    pub fn queued_tracks(&self) -> Vec<Track> {
+        self.queue
+            .iter()
+            .filter_map(|track_idx| self.tracks.get(*track_idx).cloned())
+            .collect()
+    }
+
     pub fn peek_next(&self) -> Option<Track> {
         if self.tracks.is_empty() || self.order.is_empty() {
             return None;

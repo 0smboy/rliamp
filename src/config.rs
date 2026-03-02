@@ -7,6 +7,7 @@ pub struct Config {
     pub volume: f32,
     pub eq: [f32; 10],
     pub eq_preset: String,
+    pub theme: Option<String>,
     pub repeat: String,
     pub shuffle: bool,
     pub mono: bool,
@@ -18,6 +19,7 @@ impl Default for Config {
             volume: 0.0,
             eq: [0.0; 10],
             eq_preset: "Flat".to_string(),
+            theme: None,
             repeat: "off".to_string(),
             shuffle: false,
             mono: false,
@@ -61,6 +63,12 @@ impl Config {
                 "shuffle" => cfg.shuffle = value.eq_ignore_ascii_case("true"),
                 "mono" => cfg.mono = value.eq_ignore_ascii_case("true"),
                 "eq_preset" => cfg.eq_preset = trim_quotes(value).to_string(),
+                "theme" => {
+                    let v = trim_quotes(value).trim();
+                    if !v.is_empty() {
+                        cfg.theme = Some(v.to_string());
+                    }
+                }
                 "eq" => cfg.eq = parse_eq(value),
                 _ => {}
             }

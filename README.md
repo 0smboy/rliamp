@@ -18,8 +18,15 @@ This branch is synced with key upstream updates through **2026-03-01** (feature 
 - gapless playback with automatic next-track preload
 - yt-dlp input support (SoundCloud / YouTube / Bandcamp)
 - visualizer mode toggle (`Neon` / `Bricks` / `Columns` / `Wave` / `Scatter` / `Flame`)
+- full-screen visualizer mode (`V`)
+- interactive keymap (`Ctrl+K`, supports up/down navigation)
+- theme picker (`t`)
+- track info overlay (`i`)
+- queue manager (`A`) and playlist manager (`p`)
+- save local track to `~/Music` (`S`)
+- playlist expand/collapse (`x`)
 - provider playlist load now replaces current queue before autoplay
-- CLI flags: `--help`, `--version`
+- CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--eq-preset`, `--auto-play`
 - ffmpeg fallback decode when Symphonia fails (including unsupported WAV variants)
 - Navidrome provider integration (`NAVIDROME_URL` / `NAVIDROME_USER` / `NAVIDROME_PASS`)
 
@@ -31,8 +38,11 @@ This branch is synced with key upstream updates through **2026-03-01** (feature 
 - SoundCloud / YouTube / Bandcamp URL support via `yt-dlp`.
 - Gapless playback for local file queues (auto-preload next track).
 - Real-time 10-band spectrum visualization with six modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`).
+- Full-screen visualizer mode (`V`), plus interactive keymap/theme/info overlays.
+- Queue manager (`A`) and playlist manager (`p`) overlays.
+- Save current local track to `~/Music` (`S`).
 - 10-band parametric EQ with built-in presets.
-- CLI flags: `--help`, `--version`.
+- CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--eq-preset`, `--auto-play`.
 - Bilingual UI (`English` / `中文`) with runtime toggle.
 - Custom EQ quick modes (`1`-`6`) including `Engineer`.
 - Queue, search, shuffle, repeat, mono, seek, and volume controls.
@@ -81,6 +91,10 @@ export PATH="/opt/zerobrew/bin:$PATH"
 # local files
 cargo run -- /path/to/track.mp3
 cargo run -- /path/to/*.mp3
+
+# start immediately with overrides
+cargo run -- --auto-play --shuffle --volume -5 /path/to/Music
+cargo run -- --theme Amber --eq-preset "Rock" /path/to/Music
 
 # recursive directory scan
 cargo run -- /path/to/Music
@@ -161,8 +175,9 @@ Press `1`-`6` at runtime to apply the custom profiles:
 
 | Key | Action |
 |---|---|
-| `Space` / `p` | Play / Pause |
+| `Space` | Play / Pause |
 | `s` | Stop |
+| `S` | Save current local track to `~/Music` |
 | `>` `.` | Next track |
 | `<` `,` | Previous track |
 | `Left` `Right` | Seek -/+5s (local tracks) |
@@ -170,10 +185,16 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `m` | Toggle mono |
 | `g` | Toggle matrix background |
 | `e` | Cycle EQ preset |
-| `c` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame) |
+| `t` | Choose theme |
+| `c` / `v` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame) |
+| `V` | Toggle full-screen visualizer |
 | `1` `2` `3` `4` `5` `6` | Apply custom EQ mode |
-| `i` | Toggle UI language (EN / ZH) |
+| `u` | Toggle UI language (EN / ZH) |
+| `i` | Track info / metadata overlay |
 | `a` | Toggle queue for selected track |
+| `A` | Queue manager |
+| `p` | Playlist manager |
+| `x` | Expand/collapse playlist |
 | `/` | Search playlist |
 | `Tab` | Toggle focus (Playlist / EQ) |
 | `Esc` / `b` | Back to provider view (when provider is configured) |

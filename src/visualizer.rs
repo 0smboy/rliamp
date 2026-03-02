@@ -17,6 +17,7 @@ pub struct Visualizer {
     mode: VisualizerMode,
     wave_buf: Vec<f32>,
     frame: u64,
+    rows: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +47,12 @@ impl Visualizer {
             mode: VisualizerMode::Neon,
             wave_buf: Vec::new(),
             frame: 0,
+            rows: 4,
         }
+    }
+
+    pub fn set_rows(&mut self, rows: usize) {
+        self.rows = rows.clamp(2, 32);
     }
 
     pub fn cycle_mode(&mut self) {
@@ -153,54 +159,53 @@ impl Visualizer {
     }
 
     fn render_neon(&self, bands: [f32; NUM_BANDS], phase: u64) -> Vec<String> {
+        let rows = self.rows.max(2);
         let mut spark = String::new();
-        let mut top = String::new();
-        let mut mid = String::new();
-        let mut low = String::new();
 
         for (idx, level) in bands.iter().enumerate() {
             spark.push_str(&sparkle_band(*level, phase, idx));
-            top.push_str(&level_band(
-                *level,
-                [0.72, 0.62, 0.52],
-                ['█', '▓', '▒'],
-                BAR_WIDTH,
-            ));
-            mid.push_str(&level_band(
-                *level,
-                [0.52, 0.38, 0.25],
-                ['█', '▓', '▒'],
-                BAR_WIDTH,
-            ));
-            low.push_str(&level_band(
-                *level,
-                [0.28, 0.18, 0.10],
-                ['█', '▒', '░'],
-                BAR_WIDTH,
-            ));
 
             if idx + 1 < NUM_BANDS {
                 spark.push(' ');
-                top.push(' ');
-                mid.push(' ');
-                low.push(' ');
             }
         }
 
-        vec![spark, top, mid, low]
+        let mut lines = vec![spark];
+        let bar_rows = rows - 1;
+        for row in 0..bar_rows {
+            let row_bottom = (bar_rows - 1 - row) as f32 / bar_rows as f32;
+            let row_top = (bar_rows - row) as f32 / bar_rows as f32;
+            let mut line = String::new();
+            for (idx, level) in bands.iter().enumerate() {
+                let block = if *level >= row_top {
+                    '█'
+                } else if *level > row_bottom {
+                    let frac = (*level - row_bottom) / (row_top - row_bottom);
+                    let i = (frac * 7.0).clamp(1.0, 7.0) as usize;
+                    [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇'][i]
+                } else {
+                    ' '
+                };
+                line.push_str(&block.to_string().repeat(BAR_WIDTH));
+                if idx + 1 < NUM_BANDS {
+                    line.push(' ');
+                }
+            }
+            lines.push(line);
+        }
+        lines
     }
 
     fn render_bricks(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
-        const ROWS: usize = 4;
-        let mut lines = vec![String::new(); ROWS];
-        let thresholds = [0.72, 0.50, 0.30, 0.14];
-
-        for (row, threshold) in thresholds.iter().enumerate() {
+        let rows = self.rows.max(2);
+        let mut lines = vec![String::new(); rows];
+        for row in 0..rows {
+            let threshold = (rows - 1 - row) as f32 / rows as f32;
             for (idx, level) in bands.iter().enumerate() {
-                let glyph = if *level >= *threshold {
-                    if row == 0 {
+                let glyph = if *level >= threshold {
+                    if row <= rows / 4 {
                         '█'
-                    } else if row == 1 {
+                    } else if row <= rows / 2 {
                         '▓'
                     } else {
                         '▄'
@@ -219,9 +224,9 @@ impl Visualizer {
     }
 
     fn render_columns(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
-        const ROWS: usize = 4;
+        let rows = self.rows.max(2);
         const COLS_PER_BAND: usize = 5;
-        let mut lines = vec![String::new(); ROWS];
+        let mut lines = vec![String::new(); rows];
 
         let mut cols = vec![0.0; NUM_BANDS * COLS_PER_BAND];
         for (band, level) in bands.iter().enumerate() {
@@ -236,9 +241,9 @@ impl Visualizer {
             }
         }
 
-        for row in 0..ROWS {
-            let row_bottom = (ROWS - 1 - row) as f32 / ROWS as f32;
-            let row_top = (ROWS - row) as f32 / ROWS as f32;
+        for row in 0..rows {
+            let row_bottom = (rows - 1 - row) as f32 / rows as f32;
+            let row_top = (rows - row) as f32 / rows as f32;
 
             for band in 0..NUM_BANDS {
                 for c in 0..COLS_PER_BAND {
@@ -264,11 +269,11 @@ impl Visualizer {
     }
 
     fn render_wave(&self) -> Vec<String> {
-        const ROWS: usize = 4;
+        let rows = self.rows.max(2);
         const CHAR_COLS: usize = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
-        let dot_rows = ROWS * 4;
+        let dot_rows = rows * 4;
         let dot_cols = CHAR_COLS * 2;
-        let mut lines = vec![String::new(); ROWS];
+        let mut lines = vec![String::new(); rows];
 
         let mut y_pos = vec![dot_rows / 2; dot_cols];
         if !self.wave_buf.is_empty() {
@@ -281,7 +286,7 @@ impl Visualizer {
             }
         }
 
-        for row in 0..ROWS {
+        for row in 0..rows {
             let dot_row_start = row * 4;
             for ch in 0..CHAR_COLS {
                 let dot_col_start = ch * 2;
@@ -307,12 +312,12 @@ impl Visualizer {
     }
 
     fn render_scatter(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
-        const ROWS: usize = 4;
+        let rows = self.rows.max(2);
         const CHAR_COLS: usize = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
-        let dot_rows = ROWS * 4;
-        let mut lines = vec![String::new(); ROWS];
+        let dot_rows = rows * 4;
+        let mut lines = vec![String::new(); rows];
 
-        for row in 0..ROWS {
+        for row in 0..rows {
             for col in 0..CHAR_COLS {
                 let band = (col * NUM_BANDS / CHAR_COLS).min(NUM_BANDS - 1);
                 let level = bands[band];
@@ -336,57 +341,50 @@ impl Visualizer {
     }
 
     fn render_flame(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
-        const ROWS: usize = 4;
-        const CHAR_COLS: usize = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
-        let dot_rows = ROWS * 4;
-        let mut lines = vec![String::new(); ROWS];
+        let rows = self.rows.max(2);
+        let dot_rows = rows * 4;
+        let mut lines = vec![String::new(); rows];
 
-        for row in 0..ROWS {
-            for col in 0..CHAR_COLS {
-                let band = (col * NUM_BANDS / CHAR_COLS).min(NUM_BANDS - 1);
-                let mut cell = 0x2800u32;
-                for dr in 0..4 {
-                    for dc in 0..2 {
-                        let dot_row = row * 4 + dr;
-                        let heat = dot_row as f32 / (dot_rows - 1) as f32;
-                        let b0 = bands[band];
-                        let b1 = bands[(band + 1).min(NUM_BANDS - 1)];
-                        let energy = (b0 * 0.7 + b1 * 0.3).powf(1.3);
-                        let jitter = ((self.frame as f32 * 0.09) + (col as f32 * 0.41)
-                            - (dot_row as f32 * 0.33))
-                            .sin()
-                            .abs()
-                            * 0.18;
-                        let threshold = (energy * (0.2 + heat.powf(1.4)) + jitter).clamp(0.0, 1.0);
-                        let h = hash01(self.frame.wrapping_add(17), band, dot_row, col * 2 + dc);
-                        if h < threshold {
-                            cell |= BRAILLE_BITS[dr][dc];
+        for row in 0..rows {
+            for band in 0..NUM_BANDS {
+                for c in 0..BAR_WIDTH {
+                    let mut cell = 0x2800u32;
+                    for dr in 0..4 {
+                        for dc in 0..2 {
+                            let dot_row = row * 4 + dr;
+                            let dot_col = c * 2 + dc;
+
+                            let flame_y = (dot_rows - 1 - dot_row) as f32 / (dot_rows - 1) as f32;
+                            if flame_y > bands[band] {
+                                continue;
+                            }
+
+                            let t = self.frame as f32 * 0.3;
+                            let wobble = (t + flame_y * 6.0 + band as f32 * 2.1).sin() * 1.5;
+                            let center_col = BAR_WIDTH as f32;
+                            let tip_narrow = 1.0 - flame_y / bands[band].max(0.01);
+                            let flame_width = (0.3 + 0.7 * tip_narrow) * center_col;
+
+                            let dist = (dot_col as f32 - center_col + 0.5 - wobble).abs();
+                            if dist < flame_width {
+                                let edge = dist / flame_width.max(0.01);
+                                let h = hash01(self.frame.wrapping_add(31), band, dot_row, dot_col);
+                                if edge < 0.7 || h < 0.6 {
+                                    cell |= BRAILLE_BITS[dr][dc];
+                                }
+                            }
                         }
                     }
+                    lines[row].push(char::from_u32(cell).unwrap_or(' '));
                 }
-                lines[row].push(char::from_u32(cell).unwrap_or(' '));
+                if band + 1 < NUM_BANDS {
+                    lines[row].push(' ');
+                }
             }
         }
 
         lines
     }
-}
-
-fn level_band(level: f32, thresholds: [f32; 3], chars: [char; 3], width: usize) -> String {
-    let ch = if level >= thresholds[0] {
-        chars[0]
-    } else if level >= thresholds[1] {
-        chars[1]
-    } else if level >= thresholds[2] {
-        chars[2]
-    } else {
-        ' '
-    };
-
-    if ch == ' ' {
-        return " ".repeat(width);
-    }
-    ch.to_string().repeat(width)
 }
 
 fn sparkle_band(level: f32, phase: u64, idx: usize) -> String {

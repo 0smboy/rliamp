@@ -11,7 +11,9 @@ use crossterm::style::Print;
 use crossterm::terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use std::env;
+use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -30,6 +32,178 @@ const ANSI_YELLOW: &str = "\x1b[93m";
 const ANSI_YELLOW_BOLD: &str = "\x1b[1;93m";
 const ANSI_MAGENTA: &str = "\x1b[95m";
 const ANSI_RED: &str = "\x1b[91m";
+
+const DEFAULT_VIS_ROWS: usize = 4;
+const EXPANDED_VIS_ROWS: usize = 20;
+
+struct ThemeEntry {
+    name: &'static str,
+}
+
+const THEMES: [ThemeEntry; 3] = [
+    ThemeEntry { name: "Neo Mint" },
+    ThemeEntry { name: "Amber" },
+    ThemeEntry { name: "Ice" },
+];
+
+struct KeymapEntry {
+    key: &'static str,
+    action_en: &'static str,
+    action_zh: &'static str,
+}
+
+const KEYMAP_ENTRIES: [KeymapEntry; 30] = [
+    KeymapEntry {
+        key: "Space",
+        action_en: "Play / Pause",
+        action_zh: "播放 / 暂停",
+    },
+    KeymapEntry {
+        key: "s",
+        action_en: "Stop",
+        action_zh: "停止",
+    },
+    KeymapEntry {
+        key: "> .",
+        action_en: "Next track",
+        action_zh: "下一曲",
+    },
+    KeymapEntry {
+        key: "< ,",
+        action_en: "Previous track",
+        action_zh: "上一曲",
+    },
+    KeymapEntry {
+        key: "← →",
+        action_en: "Seek +/-5s",
+        action_zh: "快进/快退 5 秒",
+    },
+    KeymapEntry {
+        key: "+ -",
+        action_en: "Volume up/down",
+        action_zh: "音量增减",
+    },
+    KeymapEntry {
+        key: "m",
+        action_en: "Toggle mono",
+        action_zh: "切换单声道",
+    },
+    KeymapEntry {
+        key: "e",
+        action_en: "Cycle EQ preset",
+        action_zh: "循环切换 EQ 预设",
+    },
+    KeymapEntry {
+        key: "t",
+        action_en: "Choose theme",
+        action_zh: "选择主题",
+    },
+    KeymapEntry {
+        key: "c / v",
+        action_en: "Cycle visualizer",
+        action_zh: "循环切换频谱",
+    },
+    KeymapEntry {
+        key: "V",
+        action_en: "Full-screen visualizer",
+        action_zh: "全屏频谱",
+    },
+    KeymapEntry {
+        key: "↑ ↓",
+        action_en: "Playlist scroll / EQ adjust",
+        action_zh: "播放列表滚动 / EQ 调节",
+    },
+    KeymapEntry {
+        key: "h l",
+        action_en: "EQ cursor left/right",
+        action_zh: "EQ 光标左/右",
+    },
+    KeymapEntry {
+        key: "Enter",
+        action_en: "Play selected track",
+        action_zh: "播放选中曲目",
+    },
+    KeymapEntry {
+        key: "a",
+        action_en: "Toggle queue (play next)",
+        action_zh: "加入/移出队列（下一首）",
+    },
+    KeymapEntry {
+        key: "A",
+        action_en: "Queue manager",
+        action_zh: "队列管理器",
+    },
+    KeymapEntry {
+        key: "p",
+        action_en: "Playlist manager",
+        action_zh: "播放列表管理器",
+    },
+    KeymapEntry {
+        key: "i",
+        action_en: "Track info / metadata",
+        action_zh: "曲目信息 / 元数据",
+    },
+    KeymapEntry {
+        key: "S",
+        action_en: "Save track to ~/Music",
+        action_zh: "保存曲目到 ~/Music",
+    },
+    KeymapEntry {
+        key: "r",
+        action_en: "Cycle repeat",
+        action_zh: "循环模式切换",
+    },
+    KeymapEntry {
+        key: "z",
+        action_en: "Toggle shuffle",
+        action_zh: "切换随机播放",
+    },
+    KeymapEntry {
+        key: "x",
+        action_en: "Expand/collapse playlist",
+        action_zh: "折叠/展开播放列表",
+    },
+    KeymapEntry {
+        key: "/",
+        action_en: "Search playlist",
+        action_zh: "搜索播放列表",
+    },
+    KeymapEntry {
+        key: "u",
+        action_en: "Toggle EN/ZH",
+        action_zh: "切换中英文界面",
+    },
+    KeymapEntry {
+        key: "Tab",
+        action_en: "Toggle focus",
+        action_zh: "切换焦点",
+    },
+    KeymapEntry {
+        key: "Esc / b",
+        action_en: "Back to provider",
+        action_zh: "返回服务端播放列表",
+    },
+    KeymapEntry {
+        key: "Ctrl+K",
+        action_en: "This keymap",
+        action_zh: "显示此按键说明",
+    },
+    KeymapEntry {
+        key: "g",
+        action_en: "Toggle background",
+        action_zh: "切换背景动画",
+    },
+    KeymapEntry {
+        key: "q",
+        action_en: "Quit",
+        action_zh: "退出",
+    },
+    KeymapEntry {
+        key: "Ctrl+C",
+        action_en: "Force quit",
+        action_zh: "强制退出",
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FocusArea {
@@ -208,11 +382,26 @@ pub struct App {
     error: Option<String>,
     quitting: bool,
     show_keymap: bool,
+    keymap_cursor: usize,
+    keymap_scroll: usize,
     searching: bool,
     search_query: String,
     search_results: Vec<usize>,
     search_cursor: usize,
     prev_focus: FocusArea,
+    show_themes: bool,
+    theme_idx: usize,
+    theme_cursor: usize,
+    theme_saved_idx: usize,
+    show_info: bool,
+    full_vis: bool,
+    show_queue: bool,
+    queue_cursor: usize,
+    show_pl_manager: bool,
+    pl_mgr_cursor: usize,
+    save_msg: Option<String>,
+    save_msg_ttl: u16,
+    auto_play: bool,
     bg: ParticleBackground,
     bg_enabled: bool,
 }
@@ -245,11 +434,26 @@ impl App {
             error: None,
             quitting: false,
             show_keymap: false,
+            keymap_cursor: 0,
+            keymap_scroll: 0,
             searching: false,
             search_query: String::new(),
             search_results: Vec::new(),
             search_cursor: 0,
             prev_focus: FocusArea::Playlist,
+            show_themes: false,
+            theme_idx: 0,
+            theme_cursor: 0,
+            theme_saved_idx: 0,
+            show_info: false,
+            full_vis: false,
+            show_queue: false,
+            queue_cursor: 0,
+            show_pl_manager: false,
+            pl_mgr_cursor: 0,
+            save_msg: None,
+            save_msg_ttl: 0,
+            auto_play: false,
             bg: ParticleBackground::new(PANEL_WIDTH, 24),
             bg_enabled: true,
         };
@@ -281,6 +485,39 @@ impl App {
         false
     }
 
+    pub fn set_theme_by_name(&mut self, name: &str) -> bool {
+        let normalized = name.trim().to_ascii_lowercase();
+        if normalized.is_empty() || normalized == "default" || normalized == "neo" {
+            self.theme_idx = 0;
+            return true;
+        }
+        for (idx, theme) in THEMES.iter().enumerate() {
+            if theme.name.to_ascii_lowercase() == normalized {
+                self.theme_idx = idx;
+                return true;
+            }
+        }
+        match normalized.as_str() {
+            "neon" | "neo-mint" => {
+                self.theme_idx = 0;
+                true
+            }
+            "amber" => {
+                self.theme_idx = 1;
+                true
+            }
+            "ice" | "blue" => {
+                self.theme_idx = 2;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn set_auto_play(&mut self, enabled: bool) {
+        self.auto_play = enabled;
+    }
+
     fn tr<'a>(&self, en: &'a str, zh: &'a str) -> &'a str {
         if self.lang == UiLang::Zh {
             zh
@@ -295,6 +532,13 @@ impl App {
 
     fn toggle_background(&mut self) {
         self.bg_enabled = !self.bg_enabled;
+    }
+
+    fn theme_name(&self) -> &str {
+        THEMES
+            .get(self.theme_idx)
+            .map(|t| t.name)
+            .unwrap_or(THEMES[0].name)
     }
 
     fn apply_eq_preset_hotkey(&mut self, hotkey: char) -> bool {
@@ -380,6 +624,14 @@ impl App {
         let tick_rate = Duration::from_millis(50);
         let mut last_tick = Instant::now();
 
+        if self.auto_play && self.playlist.len() > 0 {
+            self.focus = FocusArea::Playlist;
+            self.playlist
+                .set_index(self.pl_cursor.min(self.playlist.len() - 1));
+            self.play_current_track();
+            self.auto_play = false;
+        }
+
         loop {
             self.draw(stdout)?;
 
@@ -429,7 +681,27 @@ impl App {
         }
 
         if self.show_keymap {
-            self.show_keymap = false;
+            self.handle_keymap_key(key);
+            return;
+        }
+
+        if self.show_themes {
+            self.handle_theme_key(key);
+            return;
+        }
+
+        if self.show_pl_manager {
+            self.handle_playlist_manager_key(key);
+            return;
+        }
+
+        if self.show_queue {
+            self.handle_queue_key(key);
+            return;
+        }
+
+        if self.show_info {
+            self.handle_info_key(key);
             return;
         }
 
@@ -442,17 +714,11 @@ impl App {
             && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
         {
             self.show_keymap = true;
+            self.keymap_cursor = 0;
+            self.keymap_scroll = 0;
             return;
         }
 
-        if matches!(key.code, KeyCode::Char('i') | KeyCode::Char('I')) {
-            self.toggle_language();
-            return;
-        }
-        if matches!(key.code, KeyCode::Char('g') | KeyCode::Char('G')) {
-            self.toggle_background();
-            return;
-        }
         if matches!(
             key.code,
             KeyCode::Char('1')
@@ -476,11 +742,13 @@ impl App {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.quit(),
             KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('b') | KeyCode::Char('B') => {
-                if self.provider.is_some() {
+                if self.full_vis {
+                    self.full_vis = false;
+                } else if self.provider.is_some() {
                     self.focus = FocusArea::Provider;
                 }
             }
-            KeyCode::Char(' ') | KeyCode::Char('p') | KeyCode::Char('P') => {
+            KeyCode::Char(' ') => {
                 if self.player.is_loading() {
                     return;
                 }
@@ -490,7 +758,7 @@ impl App {
                     self.player.toggle_pause();
                 }
             }
-            KeyCode::Char('s') | KeyCode::Char('S') => self.player.stop(),
+            KeyCode::Char('s') => self.player.stop(),
             KeyCode::Char('>') | KeyCode::Char('.') => self.next_track(),
             KeyCode::Char('<') | KeyCode::Char(',') => self.prev_track(),
             KeyCode::Left => {
@@ -539,6 +807,14 @@ impl App {
                 self.player.clear_preload();
                 self.preload_next();
             }
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                self.pl_visible = if self.pl_visible == 5 {
+                    EXPANDED_VIS_ROWS
+                } else {
+                    5
+                };
+                self.adjust_scroll();
+            }
             KeyCode::Tab => {
                 self.focus = if self.focus == FocusArea::Playlist {
                     FocusArea::Eq
@@ -557,9 +833,10 @@ impl App {
                 }
             }
             KeyCode::Char('e') | KeyCode::Char('E') => self.cycle_eq_preset(),
-            KeyCode::Char('c') | KeyCode::Char('C') => self.vis.cycle_mode(),
+            KeyCode::Char('c') | KeyCode::Char('C') | KeyCode::Char('v') => self.vis.cycle_mode(),
+            KeyCode::Char('V') => self.full_vis = !self.full_vis,
             KeyCode::Char('m') | KeyCode::Char('M') => self.player.toggle_mono(),
-            KeyCode::Char('a') | KeyCode::Char('A') => {
+            KeyCode::Char('a') => {
                 if self.focus == FocusArea::Playlist && self.pl_cursor < self.playlist.len() {
                     if !self.playlist.dequeue(self.pl_cursor) {
                         self.playlist.queue(self.pl_cursor);
@@ -568,7 +845,156 @@ impl App {
                     self.preload_next();
                 }
             }
+            KeyCode::Char('A') => {
+                self.show_queue = true;
+                self.queue_cursor = 0;
+            }
+            KeyCode::Char('p') => {
+                self.show_pl_manager = true;
+                self.pl_mgr_cursor = self.pl_cursor.min(self.playlist.len().saturating_sub(1));
+            }
+            KeyCode::Char('i') | KeyCode::Char('I') => {
+                self.show_info = true;
+            }
+            KeyCode::Char('u') | KeyCode::Char('U') => self.toggle_language(),
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                self.show_themes = true;
+                self.theme_saved_idx = self.theme_idx;
+                self.theme_cursor = self.theme_idx;
+            }
+            KeyCode::Char('g') | KeyCode::Char('G') => self.toggle_background(),
+            KeyCode::Char('S') => self.save_current_track(),
             KeyCode::Char('/') => self.start_search(),
+            _ => {}
+        }
+    }
+
+    fn handle_keymap_key(&mut self, key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+        {
+            self.show_keymap = false;
+            return;
+        }
+
+        let max_visible = 14usize;
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                self.show_keymap = false;
+            }
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                if self.keymap_cursor > 0 {
+                    self.keymap_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                if self.keymap_cursor + 1 < KEYMAP_ENTRIES.len() {
+                    self.keymap_cursor += 1;
+                }
+            }
+            _ => {}
+        }
+
+        if self.keymap_cursor < self.keymap_scroll {
+            self.keymap_scroll = self.keymap_cursor;
+        }
+        if self.keymap_cursor >= self.keymap_scroll + max_visible {
+            self.keymap_scroll = self.keymap_cursor + 1 - max_visible;
+        }
+    }
+
+    fn handle_theme_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                if self.theme_cursor > 0 {
+                    self.theme_cursor -= 1;
+                    self.theme_idx = self.theme_cursor;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                if self.theme_cursor + 1 < THEMES.len() {
+                    self.theme_cursor += 1;
+                    self.theme_idx = self.theme_cursor;
+                }
+            }
+            KeyCode::Enter => {
+                self.theme_idx = self.theme_cursor;
+                self.show_themes = false;
+            }
+            KeyCode::Esc | KeyCode::Char('t') | KeyCode::Char('T') | KeyCode::Char('q') => {
+                self.theme_idx = self.theme_saved_idx;
+                self.show_themes = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_info_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') | KeyCode::Char('q') => {
+                self.show_info = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_queue_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('A') => self.show_queue = false,
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                if self.queue_cursor > 0 {
+                    self.queue_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                if self.queue_cursor + 1 < self.playlist.queue_len() {
+                    self.queue_cursor += 1;
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                if self.playlist.remove_queue_at(self.queue_cursor) {
+                    if self.queue_cursor >= self.playlist.queue_len() && self.queue_cursor > 0 {
+                        self.queue_cursor -= 1;
+                    }
+                    self.player.clear_preload();
+                    self.preload_next();
+                }
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                self.playlist.clear_queue();
+                self.queue_cursor = 0;
+                self.player.clear_preload();
+                self.preload_next();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_playlist_manager_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('p') => self.show_pl_manager = false,
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                if self.pl_mgr_cursor > 0 {
+                    self.pl_mgr_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                if self.pl_mgr_cursor + 1 < self.playlist.len() {
+                    self.pl_mgr_cursor += 1;
+                }
+            }
+            KeyCode::Enter => {
+                if self.playlist.len() > 0 {
+                    self.pl_cursor = self.pl_mgr_cursor.min(self.playlist.len() - 1);
+                    self.playlist.set_index(self.pl_cursor);
+                    self.adjust_scroll();
+                    self.play_current_track();
+                    self.show_pl_manager = false;
+                }
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                self.remove_playlist_track(self.pl_mgr_cursor)
+            }
             _ => {}
         }
     }
@@ -586,7 +1012,7 @@ impl App {
                     self.prov_cursor += 1;
                 }
             }
-            KeyCode::Char(' ') | KeyCode::Char('p') | KeyCode::Char('P') => {
+            KeyCode::Char(' ') => {
                 if self.player.is_loading() {
                     return;
                 }
@@ -594,6 +1020,24 @@ impl App {
                     self.play_current_track();
                 } else {
                     self.player.toggle_pause();
+                }
+            }
+            KeyCode::Char('u') | KeyCode::Char('U') => self.toggle_language(),
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                self.show_themes = true;
+                self.theme_saved_idx = self.theme_idx;
+                self.theme_cursor = self.theme_idx;
+            }
+            KeyCode::Char('i') | KeyCode::Char('I') => self.show_info = true,
+            KeyCode::Char('g') | KeyCode::Char('G') => self.toggle_background(),
+            KeyCode::Char('A') => {
+                self.show_queue = true;
+                self.queue_cursor = 0;
+            }
+            KeyCode::Char('p') => {
+                if self.playlist.len() > 0 {
+                    self.show_pl_manager = true;
+                    self.pl_mgr_cursor = self.pl_cursor.min(self.playlist.len().saturating_sub(1));
                 }
             }
             KeyCode::Enter => self.load_provider_tracks(),
@@ -690,6 +1134,12 @@ impl App {
         self.title_off = self.title_off.wrapping_add(1);
         if self.bg_enabled {
             self.bg.tick();
+        }
+        if self.save_msg_ttl > 0 {
+            self.save_msg_ttl -= 1;
+            if self.save_msg_ttl == 0 {
+                self.save_msg = None;
+            }
         }
     }
 
@@ -803,6 +1253,115 @@ impl App {
         }
     }
 
+    fn remove_playlist_track(&mut self, idx: usize) {
+        if idx >= self.playlist.len() {
+            return;
+        }
+
+        let was_playing = self.player.is_playing();
+        let removed_current = self.playlist.index() == Some(idx);
+        if !self.playlist.remove_at(idx) {
+            return;
+        }
+
+        if self.playlist.len() == 0 {
+            self.player.stop();
+            self.pl_cursor = 0;
+            self.pl_scroll = 0;
+            self.pl_mgr_cursor = 0;
+            return;
+        }
+
+        self.pl_cursor = self.pl_cursor.min(self.playlist.len() - 1);
+        self.pl_mgr_cursor = self.pl_mgr_cursor.min(self.playlist.len() - 1);
+        self.adjust_scroll();
+
+        if removed_current && was_playing {
+            let next_idx = idx.min(self.playlist.len() - 1);
+            self.playlist.set_index(next_idx);
+            self.pl_cursor = next_idx;
+            self.play_current_track();
+        } else {
+            self.player.clear_preload();
+            self.preload_next();
+        }
+    }
+
+    fn save_current_track(&mut self) {
+        let Some((track, _)) = self.playlist.current() else {
+            self.save_msg = Some(self.tr("Nothing to save", "没有可保存的曲目").to_string());
+            self.save_msg_ttl = 60;
+            return;
+        };
+
+        if track.stream || track.path.starts_with("http://") || track.path.starts_with("https://") {
+            self.save_msg = Some(
+                self.tr(
+                    "Only local file tracks can be saved",
+                    "仅支持保存本地文件曲目",
+                )
+                .to_string(),
+            );
+            self.save_msg_ttl = 60;
+            return;
+        }
+
+        let src = Path::new(&track.path);
+        if !src.exists() {
+            self.save_msg = Some(self.tr("Source file not found", "源文件不存在").to_string());
+            self.save_msg_ttl = 60;
+            return;
+        }
+
+        let home = env::var_os("HOME");
+        let Some(home) = home else {
+            self.save_msg = Some(
+                self.tr("HOME is not set", "HOME 环境变量未设置")
+                    .to_string(),
+            );
+            self.save_msg_ttl = 60;
+            return;
+        };
+
+        let target_dir = Path::new(&home).join("Music");
+        if let Err(err) = fs::create_dir_all(&target_dir) {
+            self.save_msg = Some(format!("{}: {err}", self.tr("Save failed", "保存失败")));
+            self.save_msg_ttl = 60;
+            return;
+        }
+
+        let ext = src.extension().and_then(|v| v.to_str()).unwrap_or("mp3");
+        let mut base = if track.artist.is_empty() {
+            track.title.clone()
+        } else {
+            format!("{} - {}", track.artist, track.title)
+        };
+        if base.trim().is_empty() {
+            base = "rliamp-track".to_string();
+        }
+
+        let mut candidate = target_dir.join(format!("{}.{}", sanitize_filename(&base), ext));
+        let mut n = 1usize;
+        while candidate.exists() {
+            candidate = target_dir.join(format!("{}-{}.{}", sanitize_filename(&base), n, ext));
+            n += 1;
+        }
+
+        match fs::copy(src, &candidate) {
+            Ok(_) => {
+                self.save_msg = Some(format!(
+                    "{} {}",
+                    self.tr("Saved:", "已保存:"),
+                    candidate.display()
+                ));
+            }
+            Err(err) => {
+                self.save_msg = Some(format!("{}: {err}", self.tr("Save failed", "保存失败")));
+            }
+        }
+        self.save_msg_ttl = 80;
+    }
+
     fn cycle_eq_preset(&mut self) {
         let next = match self.eq_preset_idx {
             Some(idx) => (idx + 1) % EQ_PRESETS.len(),
@@ -846,6 +1405,21 @@ impl App {
         if self.show_keymap {
             return wrap_frame(self.render_keymap());
         }
+        if self.show_themes {
+            return wrap_frame(self.render_theme_picker());
+        }
+        if self.show_pl_manager {
+            return wrap_frame(self.render_playlist_manager());
+        }
+        if self.show_queue {
+            return wrap_frame(self.render_queue_manager());
+        }
+        if self.show_info {
+            return wrap_frame(self.render_track_info_overlay());
+        }
+        if self.full_vis {
+            return wrap_frame(self.render_full_visualizer());
+        }
 
         let mut lines = vec![
             self.render_title(),
@@ -870,6 +1444,9 @@ impl App {
         if let Some(err) = &self.error {
             lines.push(format!("{}: {err}", self.tr("ERR", "错误")));
         }
+        if let Some(msg) = &self.save_msg {
+            lines.push(msg.clone());
+        }
 
         wrap_frame(lines)
     }
@@ -878,72 +1455,203 @@ impl App {
         let mut lines = vec![
             self.tr("K E Y M A P", "按 键 说 明").to_string(),
             String::new(),
-            format!("  Space      {}", self.tr("Play / Pause", "播放 / 暂停")),
-            format!("  s          {}", self.tr("Stop", "停止")),
-            format!("  > .        {}", self.tr("Next track", "下一曲")),
-            format!("  < ,        {}", self.tr("Previous track", "上一曲")),
-            format!("  ← →        {}", self.tr("Seek +/-5s", "快进/快退 5 秒")),
-            format!("  + -        {}", self.tr("Volume up/down", "音量增减")),
-            format!("  m          {}", self.tr("Toggle mono", "切换单声道")),
-            format!(
-                "  g          {}",
-                self.tr("Toggle background", "切换背景动画")
-            ),
-            format!(
-                "  e          {}",
-                self.tr("Cycle EQ presets", "循环切换 EQ 预设")
-            ),
-            format!(
-                "  c          {}",
-                self.tr("Cycle visualizer mode", "切换频谱可视化模式")
-            ),
-            format!(
-                "  1-6        {}",
-                self.tr("Quick EQ mode 1-6", "快速 EQ 模式 1-6")
-            ),
-            format!("  i          {}", self.tr("Toggle EN/ZH", "切换中英文界面")),
-            format!(
-                "  ↑ ↓        {}",
-                self.tr("Playlist scroll / EQ adjust", "播放列表滚动 / EQ 调节")
-            ),
-            format!(
-                "  h l        {}",
-                self.tr("EQ cursor left/right", "EQ 光标左/右")
-            ),
-            format!(
-                "  Enter      {}",
-                self.tr("Play selected track", "播放选中曲目")
-            ),
-            format!(
-                "  a          {}",
-                self.tr("Toggle queue (play next)", "加入/移出队列（下一首）")
-            ),
-            format!(
-                "  /          {}",
-                self.tr("Search playlist", "搜索播放列表")
-            ),
-            format!("  Tab        {}", self.tr("Toggle focus", "切换焦点")),
-            format!(
-                "  Esc / b    {}",
-                self.tr("Back to provider", "返回服务端播放列表")
-            ),
-            format!("  Ctrl+K     {}", self.tr("This keymap", "显示此按键说明")),
-            format!("  q          {}", self.tr("Quit", "退出")),
-            String::new(),
-            self.tr("Press any key to close", "按任意键关闭")
-                .to_string(),
         ];
+        let max_visible = 14usize;
+        let start = self
+            .keymap_scroll
+            .min(KEYMAP_ENTRIES.len().saturating_sub(1));
+        let end = (start + max_visible).min(KEYMAP_ENTRIES.len());
 
-        if self.provider.is_none() {
-            lines.retain(|line| !line.contains("provider") && !line.contains("服务端"));
+        for (idx, entry) in KEYMAP_ENTRIES.iter().enumerate().take(end).skip(start) {
+            let action = self.tr(entry.action_en, entry.action_zh);
+            let label = format!("{:<10} {}", entry.key, action);
+            if idx == self.keymap_cursor {
+                lines.push(format!("> {label}"));
+            } else {
+                lines.push(format!("  {label}"));
+            }
         }
+        while lines.len() < max_visible + 2 {
+            lines.push(String::new());
+        }
+        lines.push(String::new());
+        lines.push(format!(
+            "  {}/{}",
+            self.keymap_cursor + 1,
+            KEYMAP_ENTRIES.len()
+        ));
+        lines.push(
+            self.tr("[↑↓]Navigate [Esc]Close", "[↑↓]移动 [Esc]关闭")
+                .to_string(),
+        );
 
-        if lines.iter().any(|line| display_width(line) > PANEL_WIDTH) {
-            for line in &mut lines {
-                *line = truncate_to_width(line, PANEL_WIDTH);
+        lines
+    }
+
+    fn render_theme_picker(&self) -> Vec<String> {
+        let mut lines = vec![self.tr("T H E M E S", "主 题").to_string(), String::new()];
+        for (idx, theme) in THEMES.iter().enumerate() {
+            let prefix = if idx == self.theme_cursor { "> " } else { "  " };
+            let marker = if idx == self.theme_idx { "*" } else { " " };
+            lines.push(format!("{prefix}[{marker}] {}", theme.name));
+        }
+        lines.push(String::new());
+        lines.push(
+            self.tr(
+                "[↑↓]Preview [Enter]Select [Esc/t]Cancel",
+                "[↑↓]预览 [Enter]选择 [Esc/t]取消",
+            )
+            .to_string(),
+        );
+        lines
+    }
+
+    fn render_queue_manager(&self) -> Vec<String> {
+        let mut lines = vec![self.tr("Q U E U E", "队 列").to_string(), String::new()];
+        let tracks = self.playlist.queued_tracks();
+
+        if tracks.is_empty() {
+            lines.push(self.tr("  (empty)", "  （空）").to_string());
+        } else {
+            let max_visible = self.pl_visible.max(8);
+            let scroll = self
+                .queue_cursor
+                .saturating_sub(max_visible.saturating_sub(1));
+            for (i, track) in tracks.iter().enumerate().skip(scroll).take(max_visible) {
+                let mut name = track.display_name();
+                if display_width(&name) > PANEL_WIDTH.saturating_sub(8) {
+                    let mut trimmed = truncate_to_width(&name, PANEL_WIDTH.saturating_sub(9));
+                    trimmed.push('…');
+                    name = trimmed;
+                }
+                if i == self.queue_cursor {
+                    lines.push(format!("> {}. {name}", i + 1));
+                } else {
+                    lines.push(format!("  {}. {name}", i + 1));
+                }
             }
         }
 
+        lines.push(String::new());
+        lines.push(
+            self.tr(
+                "[↑↓]Navigate [d]Remove [c]Clear [Esc/A]Close",
+                "[↑↓]移动 [d]移除 [c]清空 [Esc/A]关闭",
+            )
+            .to_string(),
+        );
+        lines
+    }
+
+    fn render_playlist_manager(&self) -> Vec<String> {
+        let mut lines = vec![
+            self.tr("P L A Y L I S T  M A N A G E R", "播 放 列 表 管 理")
+                .to_string(),
+            String::new(),
+        ];
+
+        if self.playlist.len() == 0 {
+            lines.push(
+                self.tr("  No tracks loaded", "  没有可播放曲目")
+                    .to_string(),
+            );
+            lines.push(String::new());
+            lines.push(self.tr("[Esc/p]Close", "[Esc/p]关闭").to_string());
+            return lines;
+        }
+
+        let tracks = self.playlist.tracks();
+        let max_visible = self.pl_visible.max(10);
+        let scroll = self
+            .pl_mgr_cursor
+            .saturating_sub(max_visible.saturating_sub(1));
+        for (idx, track) in tracks.iter().enumerate().skip(scroll).take(max_visible) {
+            let mut name = track.display_name();
+            if display_width(&name) > PANEL_WIDTH.saturating_sub(8) {
+                let mut trimmed = truncate_to_width(&name, PANEL_WIDTH.saturating_sub(9));
+                trimmed.push('…');
+                name = trimmed;
+            }
+            if idx == self.pl_mgr_cursor {
+                lines.push(format!("> {}. {name}", idx + 1));
+            } else {
+                lines.push(format!("  {}. {name}", idx + 1));
+            }
+        }
+
+        lines.push(String::new());
+        lines.push(
+            self.tr(
+                "[↑↓]Navigate [Enter]Play [d]Remove [Esc/p]Close",
+                "[↑↓]移动 [Enter]播放 [d]删除 [Esc/p]关闭",
+            )
+            .to_string(),
+        );
+        lines
+    }
+
+    fn render_track_info_overlay(&self) -> Vec<String> {
+        let mut lines = vec![
+            self.tr("T R A C K  I N F O", "曲 目 信 息").to_string(),
+            String::new(),
+        ];
+        let Some((track, _)) = self.playlist.current() else {
+            lines.push(self.tr("  No track loaded", "  未加载曲目").to_string());
+            lines.push(String::new());
+            lines.push(self.tr("[Esc/i]Close", "[Esc/i]关闭").to_string());
+            return lines;
+        };
+
+        lines.push(format!("  {}: {}", self.tr("Title", "标题"), track.title));
+        lines.push(format!(
+            "  {}: {}",
+            self.tr("Artist", "艺术家"),
+            if track.artist.is_empty() {
+                self.tr("(unknown)", "（未知）").to_string()
+            } else {
+                track.artist
+            }
+        ));
+        lines.push(format!("  {}: {}", self.tr("Path", "路径"), track.path));
+        lines.push(format!(
+            "  {}: {}",
+            self.tr("Stream", "流媒体"),
+            if track.stream {
+                self.tr("yes", "是")
+            } else {
+                self.tr("no", "否")
+            }
+        ));
+        lines.push(format!(
+            "  {}: {}",
+            self.tr("Duration", "时长"),
+            format_duration(self.player.duration())
+        ));
+        lines.push(String::new());
+        lines.push(self.tr("[Esc/i]Close", "[Esc/i]关闭").to_string());
+        lines
+    }
+
+    fn render_full_visualizer(&mut self) -> Vec<String> {
+        let mut lines = vec![
+            self.render_title(),
+            self.render_track_info(),
+            self.render_time_status(),
+            String::new(),
+        ];
+        lines.extend(self.render_spectrum());
+        lines.push(self.render_seek_bar());
+        lines.push(String::new());
+        lines.push(
+            self.tr(
+                "[V/Esc]Exit full visualizer [c/v]Mode [t]Theme",
+                "[V/Esc]退出全屏 [c/v]切换频谱 [t]主题",
+            )
+            .to_string(),
+        );
+        if let Some(msg) = &self.save_msg {
+            lines.push(msg.clone());
+        }
         lines
     }
 
@@ -1014,8 +1722,21 @@ impl App {
     }
 
     fn render_spectrum(&mut self) -> Vec<String> {
+        let rows = if self.full_vis {
+            self.full_vis_rows()
+        } else {
+            DEFAULT_VIS_ROWS
+        };
+        self.vis.set_rows(rows);
         let bands = self.vis.analyze(&self.player.samples(2048));
         self.vis.render(bands, self.title_off as u64)
+    }
+
+    fn full_vis_rows(&self) -> usize {
+        if let Ok((_w, h)) = terminal::size() {
+            return ((h as usize).saturating_sub(11)).clamp(8, 30);
+        }
+        16
     }
 
     fn render_seek_bar(&self) -> String {
@@ -1131,9 +1852,14 @@ impl App {
         } else {
             format!(" [Vis: {}]", self.vis.mode_name())
         };
+        let theme = if self.lang == UiLang::Zh {
+            format!(" [主题: {}]", self.theme_name())
+        } else {
+            format!(" [Theme: {}]", self.theme_name())
+        };
 
         format!(
-            "── {} ── {shuffle} {repeat}{queue}{vis} ──",
+            "── {} ── {shuffle} {repeat}{queue}{vis}{theme} ──",
             self.tr("Playlist", "播放列表")
         )
     }
@@ -1299,8 +2025,8 @@ impl App {
         if self.focus == FocusArea::Provider {
             return vec![self
                 .tr(
-                    "[↑↓]Navigate [Enter]Load [i]Lang [Tab]Focus [Q]Quit",
-                    "[↑↓]移动 [Enter]加载 [i]语言 [Tab]焦点 [Q]退出",
+                    "[↑↓]Navigate [Enter]Load [u]Lang [i]Info [t]Theme [Tab]Focus [Q]Quit",
+                    "[↑↓]移动 [Enter]加载 [u]语言 [i]信息 [t]主题 [Tab]焦点 [Q]退出",
                 )
                 .to_string()];
         }
@@ -1310,8 +2036,8 @@ impl App {
             line1.push_str(self.tr("[←→]Seek ", "[←→]快进/退 "));
         }
         line1.push_str(self.tr(
-            "[+-]Vol [m]Mono [e]EQ [c]Vis [1-6]Mode [i]Lang",
-            "[+-]音量 [m]单声道 [e]EQ [c]可视化 [1-6]模式 [i]语言",
+            "[+-]Vol [m]Mono [e]EQ [c/v]Vis [V]Full [t]Theme [u]Lang [i]Info",
+            "[+-]音量 [m]单声道 [e]EQ [c/v]频谱 [V]全屏 [t]主题 [u]语言 [i]信息",
         ));
 
         let mut line2 = String::new();
@@ -1319,8 +2045,8 @@ impl App {
             line2.push_str(self.tr("[Esc]Back ", "[Esc]返回 "));
         }
         line2.push_str(self.tr(
-            "[g]BG [a]Queue [/]Search [Tab]Focus [Q]Quit",
-            "[g]背景 [a]队列 [/]搜索 [Tab]焦点 [Q]退出",
+            "[g]BG [a]Queue [A]QueueMgr [p]PlMgr [S]Save [x]Expand [/]Search [Tab]Focus [Q]Quit",
+            "[g]背景 [a]队列 [A]队列管理 [p]列表管理 [S]保存 [x]展开 [/]搜索 [Tab]焦点 [Q]退出",
         ));
 
         vec![line1, line2]
@@ -1510,7 +2236,7 @@ impl App {
         }
 
         if is_spectrum_line(trimmed) {
-            return colorize_spectrum_line(content);
+            return self.colorize_spectrum_line(content);
         }
 
         if is_seek_line(trimmed) {
@@ -1540,6 +2266,28 @@ impl App {
         );
         styled = styled.replace("[Q", &format!("{ANSI_YELLOW}[Q{ANSI_TEXT}"));
         styled
+    }
+
+    fn colorize_spectrum_line(&self, content: &str) -> String {
+        let (hi, mid, low, spark) = match self.theme_idx {
+            1 => ("\x1b[93m", "\x1b[91m", "\x1b[33m", "\x1b[38;5;214m"),
+            2 => ("\x1b[94m", "\x1b[96m", "\x1b[36m", "\x1b[97m"),
+            _ => (ANSI_RED, ANSI_YELLOW, ANSI_GREEN, ANSI_MAGENTA),
+        };
+
+        let mut out = String::new();
+        for ch in content.chars() {
+            match ch {
+                '█' | '▉' | '▊' | '▇' | '▆' => out.push_str(&paint(hi, &ch.to_string())),
+                '▓' | '▅' | '▄' => out.push_str(&paint(mid, &ch.to_string())),
+                '▒' | '░' | '▃' | '▂' | '▁' => out.push_str(&paint(low, &ch.to_string())),
+                '\u{2800}'..='\u{28FF}' => out.push_str(&paint(low, &ch.to_string())),
+                '✦' | '•' | '·' | '.' => out.push_str(&paint(spark, &ch.to_string())),
+                ' ' => out.push(' '),
+                _ => out.push(ch),
+            }
+        }
+        out
     }
 }
 
@@ -1607,26 +2355,6 @@ fn colorize_seek_line(content: &str) -> String {
             }
             ' ' => out.push(' '),
             _ => out.push(*ch),
-        }
-    }
-    out
-}
-
-fn colorize_spectrum_line(content: &str) -> String {
-    let mut out = String::new();
-    for ch in content.chars() {
-        match ch {
-            '█' | '▉' | '▊' | '▇' | '▆' => {
-                out.push_str(&paint(ANSI_RED, &ch.to_string()))
-            }
-            '▓' | '▅' | '▄' => out.push_str(&paint(ANSI_YELLOW, &ch.to_string())),
-            '▒' | '░' | '▃' | '▂' | '▁' => {
-                out.push_str(&paint(ANSI_GREEN, &ch.to_string()))
-            }
-            '\u{2800}'..='\u{28FF}' => out.push_str(&paint(ANSI_GREEN, &ch.to_string())),
-            '✦' | '•' | '·' | '.' => out.push_str(&paint(ANSI_MAGENTA, &ch.to_string())),
-            ' ' => out.push(' '),
-            _ => out.push(ch),
         }
     }
     out
@@ -1752,6 +2480,37 @@ fn is_spectrum_line(trimmed: &str) -> bool {
         return false;
     }
     has_bar
+}
+
+fn format_duration(duration: Duration) -> String {
+    let total = duration.as_secs();
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            out.push('_');
+        } else if ch.is_control() {
+            continue;
+        } else {
+            out.push(ch);
+        }
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        "rliamp-track".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn colors_enabled() -> bool {

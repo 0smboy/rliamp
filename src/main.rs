@@ -20,15 +20,43 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 
+#[derive(Debug, Clone, Default)]
+struct CliOverrides {
+    volume: Option<f32>,
+    shuffle: Option<bool>,
+    repeat: Option<String>,
+    mono: Option<bool>,
+    theme: Option<String>,
+    eq_preset: Option<String>,
+    auto_play: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliAction {
+    Run,
+    Help,
+    Version,
+}
+
 const HELP_TEXT: &str = r#"rliamp — retro terminal music player
 
 Usage: rliamp [flags] <file|folder|url> [...]
 
 Flags:
-  --help, -h       Show this help message
-  --version, -v    Show the current version
+  --volume <dB>          Volume in dB, range [-30, +6]
+  --shuffle              Start with shuffle enabled
+  --repeat <off|all|one>
+  --mono / --no-mono
+  --theme <name>         Theme: Neo Mint | Amber | Ice
+  --eq-preset <name>     EQ preset name (e.g. Bass Boost)
+  --auto-play            Start playback immediately
+  --help, -h             Show this help message
+  --version, -v          Show the current version
 
 Examples:
+  rliamp --shuffle --volume -5 ~/Music
+  rliamp --repeat all --mono track.mp3
+  rliamp --theme Amber --eq-preset "Rock" ~/Music
   rliamp track.mp3 song.flac ~/Music
   rliamp ~/radio-stations.m3u
   rliamp ~/radio-stations.pls
@@ -49,19 +77,18 @@ Formats:
 "#;
 
 fn run() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(first) = args.first() {
-        match first.as_str() {
-            "--help" | "-h" => {
-                println!("{HELP_TEXT}");
-                return Ok(());
-            }
-            "--version" | "-v" => {
-                println!("rliamp {}", env!("CARGO_PKG_VERSION"));
-                return Ok(());
-            }
-            _ => {}
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let (action, overrides, args) = parse_cli_args(raw_args)?;
+    match action {
+        CliAction::Help => {
+            println!("{HELP_TEXT}");
+            return Ok(());
         }
+        CliAction::Version => {
+            println!("rliamp {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        CliAction::Run => {}
     }
 
     let provider = NavidromeClient::from_env().map(|p| Box::new(p) as Box<dyn Provider>);
@@ -132,8 +159,14 @@ fn run() -> Result<()> {
     }
 
     let cfg = config::Config::load().unwrap_or_default();
+    let volume = overrides.volume.unwrap_or(cfg.volume);
+    let repeat = overrides.repeat.unwrap_or(cfg.repeat);
+    let shuffle = overrides.shuffle.unwrap_or(cfg.shuffle);
+    let mono = overrides.mono.unwrap_or(cfg.mono);
+    let eq_preset = overrides.eq_preset.unwrap_or(cfg.eq_preset);
+    let theme = overrides.theme.or(cfg.theme);
 
-    match cfg.repeat.as_str() {
+    match repeat.as_str() {
         "all" => playlist.cycle_repeat(),
         "one" => {
             playlist.cycle_repeat();
@@ -141,26 +174,85 @@ fn run() -> Result<()> {
         }
         _ => {}
     }
-    if cfg.shuffle {
+    if shuffle {
         playlist.toggle_shuffle();
     }
 
     let player = player::Player::new()?;
-    player.set_volume(cfg.volume);
-    if cfg.mono {
+    player.set_volume(volume);
+    if mono {
         player.toggle_mono();
     }
-    if cfg.eq_preset.is_empty() || cfg.eq_preset.eq_ignore_ascii_case("custom") {
+    if eq_preset.is_empty() || eq_preset.eq_ignore_ascii_case("custom") {
         for (i, gain) in cfg.eq.into_iter().enumerate() {
             player.set_eq_band(i, gain);
         }
     }
 
     let mut app = ui::App::new(player, playlist, provider);
-    if !cfg.eq_preset.is_empty() && !cfg.eq_preset.eq_ignore_ascii_case("custom") {
-        app.set_eq_preset_by_name(&cfg.eq_preset);
+    if !eq_preset.is_empty() && !eq_preset.eq_ignore_ascii_case("custom") {
+        app.set_eq_preset_by_name(&eq_preset);
     }
+    if let Some(theme_name) = theme {
+        if !theme_name.trim().is_empty() {
+            let _ = app.set_theme_by_name(&theme_name);
+        }
+    }
+    app.set_auto_play(overrides.auto_play);
     app.run()
+}
+
+fn parse_cli_args(args: Vec<String>) -> Result<(CliAction, CliOverrides, Vec<String>)> {
+    let mut overrides = CliOverrides::default();
+    let mut positional = Vec::new();
+    let mut i = 0usize;
+
+    while i < args.len() {
+        let arg = &args[i];
+        if !arg.starts_with('-') {
+            positional.push(arg.clone());
+            i += 1;
+            continue;
+        }
+
+        match arg.as_str() {
+            "--help" | "-h" => return Ok((CliAction::Help, overrides, Vec::new())),
+            "--version" | "-v" => return Ok((CliAction::Version, overrides, Vec::new())),
+            "--shuffle" => overrides.shuffle = Some(true),
+            "--mono" => overrides.mono = Some(true),
+            "--no-mono" => overrides.mono = Some(false),
+            "--auto-play" => overrides.auto_play = true,
+            "--volume" => {
+                let value = next_arg(&args, &mut i, "--volume")?;
+                let parsed = value
+                    .parse::<f32>()
+                    .map_err(|_| anyhow!("flag --volume: invalid number '{value}'"))?;
+                overrides.volume = Some(parsed.clamp(-30.0, 6.0));
+            }
+            "--repeat" => {
+                let value = next_arg(&args, &mut i, "--repeat")?.to_ascii_lowercase();
+                if !matches!(value.as_str(), "off" | "all" | "one") {
+                    return Err(anyhow!("flag --repeat value must be one of: off, all, one"));
+                }
+                overrides.repeat = Some(value);
+            }
+            "--theme" => overrides.theme = Some(next_arg(&args, &mut i, "--theme")?),
+            "--eq-preset" => overrides.eq_preset = Some(next_arg(&args, &mut i, "--eq-preset")?),
+            _ => return Err(anyhow!("unknown flag: {arg}")),
+        }
+
+        i += 1;
+    }
+
+    Ok((CliAction::Run, overrides, positional))
+}
+
+fn next_arg(args: &[String], index: &mut usize, flag: &str) -> Result<String> {
+    if *index + 1 >= args.len() {
+        return Err(anyhow!("flag {flag} requires a value"));
+    }
+    *index += 1;
+    Ok(args[*index].clone())
 }
 
 fn resolve_local_input(

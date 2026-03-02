@@ -18,6 +18,10 @@ mono = false
 # Leave empty or "Custom" to use the manual eq values below
 eq_preset = "Flat"
 
+# UI theme: "Neo Mint", "Amber", "Ice"
+# Leave empty to use default
+theme = "Neo Mint"
+
 # 10-band EQ gains in dB (range: -12 to 12)
 # Bands: 70Hz, 180Hz, 320Hz, 600Hz, 1kHz, 3kHz, 6kHz, 12kHz, 14kHz, 16kHz
 eq = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
