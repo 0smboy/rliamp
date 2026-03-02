@@ -134,6 +134,14 @@ pub fn is_m3u(path: &str) -> bool {
     lower.ends_with(".m3u") || lower.ends_with(".m3u8")
 }
 
+pub fn is_pls(path: &str) -> bool {
+    if !is_url(path) {
+        return false;
+    }
+    let base = path.split('?').next().unwrap_or(path);
+    base.to_ascii_lowercase().ends_with(".pls")
+}
+
 pub fn is_feed(path: &str) -> bool {
     if !is_url(path) {
         return false;
@@ -206,6 +214,18 @@ impl Playlist {
             let idx = self.tracks.len();
             self.tracks.push(track);
             self.order.push(idx);
+        }
+    }
+
+    pub fn replace(&mut self, tracks: impl IntoIterator<Item = Track>) {
+        self.tracks.clear();
+        self.order.clear();
+        self.pos = 0;
+        self.queue.clear();
+        self.queued_idx = None;
+        self.add(tracks);
+        if self.shuffle && self.tracks.len() > 1 {
+            self.do_shuffle();
         }
     }
 

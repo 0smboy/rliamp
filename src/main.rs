@@ -11,38 +11,84 @@ mod ytdlp;
 use anyhow::{anyhow, Context, Result};
 use glob::glob;
 use navidrome::NavidromeClient;
-use playlist::{is_feed, is_m3u, is_url, is_ytdl, Playlist, Track};
+use playlist::{is_feed, is_m3u, is_pls, is_url, is_ytdl, Playlist, Track};
 use provider::Provider;
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 
+const HELP_TEXT: &str = r#"rliamp — retro terminal music player
+
+Usage: rliamp [flags] <file|folder|url> [...]
+
+Flags:
+  --help, -h       Show this help message
+  --version, -v    Show the current version
+
+Examples:
+  rliamp track.mp3 song.flac ~/Music
+  rliamp ~/radio-stations.m3u
+  rliamp ~/radio-stations.pls
+  rliamp https://example.com/song.mp3
+  rliamp http://radio.example.com/stream.m3u
+  rliamp http://radio.example.com/stream.pls
+  rliamp https://example.com/podcast/feed.xml
+  rliamp https://soundcloud.com/user/sets/playlist
+  rliamp https://www.youtube.com/watch?v=...
+  rliamp https://artist.bandcamp.com/album/...
+
+Environment:
+  NAVIDROME_URL, NAVIDROME_USER, NAVIDROME_PASS
+
+Formats:
+  mp3, wav, flac, ogg, m4a, aac, opus, wma
+  (aac/opus/wma and some streams need ffmpeg)
+"#;
+
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(first) = args.first() {
+        match first.as_str() {
+            "--help" | "-h" => {
+                println!("{HELP_TEXT}");
+                return Ok(());
+            }
+            "--version" | "-v" => {
+                println!("rliamp {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     let provider = NavidromeClient::from_env().map(|p| Box::new(p) as Box<dyn Provider>);
 
     if args.is_empty() && provider.is_none() {
         return Err(anyhow!(
-            "usage: rliamp <file|folder|url> [...] or configure a provider via ENV\n\nexamples:\n  rliamp song.mp3\n  rliamp ~/Music\n  rliamp https://example.com/stream.m3u\n  rliamp https://soundcloud.com/user/sets/playlist\n\nprovider env (Navidrome):\n  NAVIDROME_URL NAVIDROME_USER NAVIDROME_PASS\n\noptional tools:\n  yt-dlp (for SoundCloud/YouTube/Bandcamp URLs)"
+            "usage: rliamp <file|folder|url> [...] or configure a provider via ENV\n\nexamples:\n  rliamp song.mp3\n  rliamp ~/Music\n  rliamp ~/radio-stations.m3u\n  rliamp ~/radio-stations.pls\n  rliamp https://example.com/stream.m3u\n  rliamp https://soundcloud.com/user/sets/playlist\n\nprovider env (Navidrome):\n  NAVIDROME_URL NAVIDROME_USER NAVIDROME_PASS\n\noptional tools:\n  yt-dlp (for SoundCloud/YouTube/Bandcamp URLs)"
         ));
     }
 
     let mut files: Vec<PathBuf> = Vec::new();
     let mut url_tracks: Vec<String> = Vec::new();
-    let mut feed_tracks: Vec<Track> = Vec::new();
+    let mut resolved_tracks: Vec<Track> = Vec::new();
 
     for arg in args {
         if is_url(&arg) {
             if is_feed(&arg) {
-                feed_tracks
+                resolved_tracks
                     .extend(resolve_feed(&arg).with_context(|| format!("resolving feed: {arg}"))?);
             } else if is_m3u(&arg) {
-                let streams = resolve_m3u(&arg).with_context(|| format!("resolving m3u: {arg}"))?;
-                url_tracks.extend(streams);
+                resolved_tracks
+                    .extend(resolve_m3u(&arg).with_context(|| format!("resolving m3u: {arg}"))?);
+            } else if is_pls(&arg) {
+                resolved_tracks
+                    .extend(resolve_pls(&arg).with_context(|| format!("resolving pls: {arg}"))?);
             } else if is_ytdl(&arg) {
-                feed_tracks.extend(
+                resolved_tracks.extend(
                     ytdlp::resolve_collection(&arg)
                         .with_context(|| format!("resolving yt-dlp collection: {arg}"))?,
                 );
@@ -57,13 +103,13 @@ fn run() -> Result<()> {
                 let mut matched = false;
                 for entry in paths.flatten() {
                     matched = true;
-                    collect_audio_files(&entry, &mut files)?;
+                    resolve_local_input(&entry, &mut files, &mut resolved_tracks)?;
                 }
                 if !matched {
-                    collect_audio_files(Path::new(&arg), &mut files)?;
+                    resolve_local_input(Path::new(&arg), &mut files, &mut resolved_tracks)?;
                 }
             }
-            Err(_) => collect_audio_files(Path::new(&arg), &mut files)?,
+            Err(_) => resolve_local_input(Path::new(&arg), &mut files, &mut resolved_tracks)?,
         }
     }
 
@@ -79,7 +125,7 @@ fn run() -> Result<()> {
             .map(|path| Track::from_path(path.to_string_lossy().to_string())),
     );
     playlist.add(url_tracks.into_iter().map(Track::from_path));
-    playlist.add(feed_tracks);
+    playlist.add(resolved_tracks);
 
     if playlist.len() == 0 && provider.is_none() {
         return Err(anyhow!("no playable files found"));
@@ -117,6 +163,51 @@ fn run() -> Result<()> {
     app.run()
 }
 
+fn resolve_local_input(
+    path: &Path,
+    files: &mut Vec<PathBuf>,
+    tracks: &mut Vec<Track>,
+) -> Result<()> {
+    let Ok(meta) = fs::metadata(path) else {
+        return Ok(());
+    };
+
+    if meta.is_file() {
+        if is_local_m3u(path) {
+            tracks.extend(resolve_local_m3u(path)?);
+            return Ok(());
+        }
+        if is_local_pls(path) {
+            tracks.extend(resolve_local_pls(path)?);
+            return Ok(());
+        }
+        if player::is_supported_path(path) {
+            files.push(path.to_path_buf());
+        }
+        return Ok(());
+    }
+
+    if meta.is_dir() {
+        collect_audio_files(path, files)?;
+    }
+
+    Ok(())
+}
+
+fn is_local_m3u(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    matches!(ext.to_ascii_lowercase().as_str(), "m3u" | "m3u8")
+}
+
+fn is_local_pls(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    ext.eq_ignore_ascii_case("pls")
+}
+
 fn collect_audio_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let Ok(meta) = fs::metadata(path) else {
         return Ok(());
@@ -145,7 +236,13 @@ fn collect_audio_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn resolve_m3u(url: &str) -> Result<Vec<String>> {
+fn resolve_local_m3u(path: &Path) -> Result<Vec<Track>> {
+    let body =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(parse_m3u_tracks(&body, path.parent()))
+}
+
+fn resolve_m3u(url: &str) -> Result<Vec<Track>> {
     let response = ureq::get(url)
         .call()
         .map_err(|err| anyhow!("request failed: {err}"))?;
@@ -153,16 +250,169 @@ fn resolve_m3u(url: &str) -> Result<Vec<String>> {
         .into_string()
         .map_err(|err| anyhow!("failed to read m3u body: {err}"))?;
 
-    let mut urls = Vec::new();
+    Ok(parse_m3u_tracks(&body, None))
+}
+
+fn parse_m3u_tracks(body: &str, base_dir: Option<&Path>) -> Vec<Track> {
+    let mut tracks = Vec::new();
+    let mut pending_title: Option<String> = None;
+
     for raw in body.lines() {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
             continue;
         }
-        urls.push(line.to_string());
+
+        if let Some(rest) = line.strip_prefix("#EXTINF:") {
+            let title = rest
+                .split_once(',')
+                .map(|(_, t)| t.trim())
+                .unwrap_or_default()
+                .to_string();
+            if !title.is_empty() {
+                pending_title = Some(title);
+            }
+            continue;
+        }
+
+        if line.starts_with('#') {
+            continue;
+        }
+
+        let mut track = if is_url(line) {
+            Track::from_path(line.to_string())
+        } else {
+            let p = Path::new(line);
+            let resolved = if p.is_absolute() {
+                p.to_path_buf()
+            } else if let Some(base) = base_dir {
+                base.join(p)
+            } else {
+                p.to_path_buf()
+            };
+            Track::from_path(resolved.to_string_lossy().to_string())
+        };
+
+        if let Some(title) = pending_title.take() {
+            apply_title_hint(&mut track, title);
+        }
+        tracks.push(track);
     }
 
-    Ok(urls)
+    tracks
+}
+
+fn resolve_local_pls(path: &Path) -> Result<Vec<Track>> {
+    let body =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    parse_pls_tracks(&body, path.parent())
+}
+
+fn resolve_pls(url: &str) -> Result<Vec<Track>> {
+    let response = ureq::get(url)
+        .call()
+        .map_err(|err| anyhow!("request failed: {err}"))?;
+    let body = response
+        .into_string()
+        .map_err(|err| anyhow!("failed to read pls body: {err}"))?;
+    parse_pls_tracks(&body, None)
+}
+
+fn parse_pls_tracks(body: &str, base_dir: Option<&Path>) -> Result<Vec<Track>> {
+    let mut files = BTreeMap::<usize, String>::new();
+    let mut titles = BTreeMap::<usize, String>::new();
+
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty()
+            || line.starts_with('[')
+            || line.starts_with(';')
+            || line.starts_with('#')
+        {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let key = k.trim();
+        let value = v.trim();
+        let lower = key.to_ascii_lowercase();
+        if let Some(num) = lower
+            .strip_prefix("file")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            files.insert(num, value.to_string());
+            continue;
+        }
+        if let Some(num) = lower
+            .strip_prefix("title")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            titles.insert(num, value.to_string());
+        }
+    }
+
+    if files.is_empty() {
+        return Err(anyhow!("no entries found in PLS playlist"));
+    }
+
+    let all_streams = files.len() > 1 && files.values().all(|p| is_url(p));
+    if all_streams {
+        let (&first_idx, first_path) = files
+            .iter()
+            .next()
+            .ok_or_else(|| anyhow!("no entries found in PLS playlist"))?;
+        let mut track = Track::from_path(first_path.to_string());
+        if let Some(title) = titles.get(&first_idx) {
+            let cleaned = strip_mirror_suffix(title.trim());
+            if !cleaned.is_empty() {
+                apply_title_hint(&mut track, cleaned.to_string());
+            }
+        }
+        return Ok(vec![track]);
+    }
+
+    let mut out = Vec::new();
+    for (idx, raw_path) in files {
+        let mut track = if is_url(&raw_path) {
+            Track::from_path(raw_path)
+        } else {
+            let p = Path::new(raw_path.as_str());
+            let resolved = if p.is_absolute() {
+                p.to_path_buf()
+            } else if let Some(base) = base_dir {
+                base.join(p)
+            } else {
+                p.to_path_buf()
+            };
+            Track::from_path(resolved.to_string_lossy().to_string())
+        };
+        if let Some(title) = titles.get(&idx) {
+            apply_title_hint(&mut track, title.trim().to_string());
+        }
+        out.push(track);
+    }
+    Ok(out)
+}
+
+fn apply_title_hint(track: &mut Track, title: String) {
+    if let Some((artist, song)) = title.split_once(" - ") {
+        if track.artist.is_empty() {
+            track.artist = artist.trim().to_string();
+        }
+        track.title = song.trim().to_string();
+    } else if !title.trim().is_empty() {
+        track.title = title.trim().to_string();
+    }
+}
+
+fn strip_mirror_suffix(s: &str) -> &str {
+    if let Some(i) = s.rfind("(#") {
+        if s.ends_with(')') {
+            return s[..i].trim_end_matches([' ', ':']).trim();
+        }
+    }
+    s
 }
 
 fn resolve_feed(url: &str) -> Result<Vec<Track>> {

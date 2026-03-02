@@ -5,7 +5,7 @@ RLIAMP is a Rust rewrite of [cliamp](https://github.com/bjarneo/cliamp): a retro
 
 ## Upstream Sync Status
 
-This branch is synced with key upstream updates through **2026-02-27** (feature window from `951e5b1` to `be82295`) for:
+This branch is synced with key upstream updates through **2026-03-01** (feature window from `1d3e9d6` to `e24a269`) for:
 
 - recursive folder scanning
 - wider/centered UI refresh
@@ -13,10 +13,13 @@ This branch is synced with key upstream updates through **2026-02-27** (feature 
 - queue (play next)
 - EQ presets
 - mono output toggle
-- URL / M3U / podcast RSS input handling
+- URL / M3U / PLS / podcast RSS input handling
+- local playlist file expansion for `.m3u`, `.m3u8`, `.pls`
 - gapless playback with automatic next-track preload
 - yt-dlp input support (SoundCloud / YouTube / Bandcamp)
-- visualizer mode toggle (`Neon` / `Bricks`)
+- visualizer mode toggle (`Neon` / `Bricks` / `Columns` / `Wave` / `Scatter` / `Flame`)
+- provider playlist load now replaces current queue before autoplay
+- CLI flags: `--help`, `--version`
 - ffmpeg fallback decode when Symphonia fails (including unsupported WAV variants)
 - Navidrome provider integration (`NAVIDROME_URL` / `NAVIDROME_USER` / `NAVIDROME_PASS`)
 
@@ -24,11 +27,12 @@ This branch is synced with key upstream updates through **2026-02-27** (feature 
 
 - Local playback: `mp3`, `wav`, `flac`, `ogg`, `m4a`, `aac`, `m4b`, `m4p`, `alac`, `wma`, `opus`.
 - URL playback for direct HTTP/HTTPS audio links.
-- M3U and podcast RSS feed expansion.
+- Local and remote M3U/PLS playlist expansion, plus podcast RSS feed support.
 - SoundCloud / YouTube / Bandcamp URL support via `yt-dlp`.
 - Gapless playback for local file queues (auto-preload next track).
-- Real-time 10-band spectrum visualization with two modes (`Neon`, `Bricks`).
+- Real-time 10-band spectrum visualization with six modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`).
 - 10-band parametric EQ with built-in presets.
+- CLI flags: `--help`, `--version`.
 - Bilingual UI (`English` / `中文`) with runtime toggle.
 - Custom EQ quick modes (`1`-`6`) including `Engineer`.
 - Queue, search, shuffle, repeat, mono, seek, and volume controls.
@@ -81,9 +85,14 @@ cargo run -- /path/to/*.mp3
 # recursive directory scan
 cargo run -- /path/to/Music
 
-# direct URL / M3U / podcast RSS
+# local M3U / PLS playlist
+cargo run -- /path/to/radio.m3u
+cargo run -- /path/to/radio.pls
+
+# direct URL / M3U / PLS / podcast RSS
 cargo run -- "https://example.com/song.mp3"
 cargo run -- "https://example.com/radio.m3u"
+cargo run -- "https://example.com/radio.pls"
 cargo run -- "https://example.com/podcast/feed.xml"
 
 # SoundCloud / YouTube / Bandcamp (requires yt-dlp)
@@ -161,7 +170,7 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `m` | Toggle mono |
 | `g` | Toggle matrix background |
 | `e` | Cycle EQ preset |
-| `c` | Cycle visualizer mode (Neon / Bricks) |
+| `c` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame) |
 | `1` `2` `3` `4` `5` `6` | Apply custom EQ mode |
 | `i` | Toggle UI language (EN / ZH) |
 | `a` | Toggle queue for selected track |

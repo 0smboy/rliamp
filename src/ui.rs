@@ -342,11 +342,13 @@ impl App {
         self.prov_loading = true;
         match provider.tracks(&selected.id) {
             Ok(tracks) => {
-                let was_empty = self.playlist.len() == 0;
-                self.playlist.add(tracks);
+                self.player.stop();
+                self.player.clear_preload();
+                self.playlist.replace(tracks);
+                self.pl_cursor = 0;
+                self.pl_scroll = 0;
                 self.focus = FocusArea::Playlist;
-                if was_empty && self.playlist.len() > 0 {
-                    self.pl_cursor = 0;
+                if self.playlist.len() > 0 {
                     self.playlist.set_index(0);
                     self.play_current_track();
                 }
@@ -1621,6 +1623,7 @@ fn colorize_spectrum_line(content: &str) -> String {
             '▒' | '░' | '▃' | '▂' | '▁' => {
                 out.push_str(&paint(ANSI_GREEN, &ch.to_string()))
             }
+            '\u{2800}'..='\u{28FF}' => out.push_str(&paint(ANSI_GREEN, &ch.to_string())),
             '✦' | '•' | '·' | '.' => out.push_str(&paint(ANSI_MAGENTA, &ch.to_string())),
             ' ' => out.push(' '),
             _ => out.push(ch),
@@ -1739,6 +1742,10 @@ fn is_spectrum_line(trimmed: &str) -> bool {
                 | '·'
                 | '.'
         ) {
+            has_bar = true;
+            continue;
+        }
+        if ('\u{2800}'..='\u{28FF}').contains(&ch) {
             has_bar = true;
             continue;
         }
