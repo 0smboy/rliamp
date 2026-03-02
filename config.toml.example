@@ -18,7 +18,7 @@ mono = false
 # Leave empty or "Custom" to use the manual eq values below
 eq_preset = "Flat"
 
-# UI theme: "Neo Mint", "Amber", "Ice"
+# UI theme examples: "Neo Mint", "tokyo-night", "nord", "gruvbox", "rose-pine"
 # Leave empty to use default
 theme = "Neo Mint"
 

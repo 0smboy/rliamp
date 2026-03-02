@@ -47,7 +47,7 @@ Flags:
   --shuffle              Start with shuffle enabled
   --repeat <off|all|one>
   --mono / --no-mono
-  --theme <name>         Theme: Neo Mint | Amber | Ice
+  --theme <name>         Theme name (e.g. tokyo-night, nord, gruvbox, rose-pine)
   --eq-preset <name>     EQ preset name (e.g. Bass Boost)
   --auto-play            Start playback immediately
   --help, -h             Show this help message

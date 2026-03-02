@@ -24,8 +24,6 @@ const ANSI_BORDER: &str = "\x1b[90m";
 const ANSI_TEXT: &str = "\x1b[37m";
 const ANSI_TEXT_BOLD: &str = "\x1b[1;37m";
 const ANSI_DIM: &str = "\x1b[90m";
-const ANSI_TITLE: &str = "\x1b[1;92m";
-const ANSI_GREEN: &str = "\x1b[92m";
 const ANSI_GREEN_BOLD: &str = "\x1b[1;92m";
 const ANSI_VOLUME: &str = "\x1b[32m";
 const ANSI_YELLOW: &str = "\x1b[93m";
@@ -38,12 +36,237 @@ const EXPANDED_VIS_ROWS: usize = 20;
 
 struct ThemeEntry {
     name: &'static str,
+    accent: &'static str,
+    muted: &'static str,
+    value: &'static str,
+    title: &'static str,
+    spectrum_hi: &'static str,
+    spectrum_mid: &'static str,
+    spectrum_low: &'static str,
+    spectrum_spark: &'static str,
 }
 
-const THEMES: [ThemeEntry; 3] = [
-    ThemeEntry { name: "Neo Mint" },
-    ThemeEntry { name: "Amber" },
-    ThemeEntry { name: "Ice" },
+const THEMES: [ThemeEntry; 20] = [
+    ThemeEntry {
+        name: "Neo Mint",
+        accent: "\x1b[38;5;120m",
+        muted: "\x1b[38;5;147m",
+        value: "\x1b[38;5;157m",
+        title: "\x1b[1;38;5;120m",
+        spectrum_hi: "\x1b[38;5;122m",
+        spectrum_mid: "\x1b[38;5;120m",
+        spectrum_low: "\x1b[38;5;84m",
+        spectrum_spark: "\x1b[38;5;159m",
+    },
+    ThemeEntry {
+        name: "tokyo-night",
+        accent: "\x1b[38;5;81m",
+        muted: "\x1b[38;5;146m",
+        value: "\x1b[38;5;117m",
+        title: "\x1b[1;38;5;81m",
+        spectrum_hi: "\x1b[38;5;75m",
+        spectrum_mid: "\x1b[38;5;81m",
+        spectrum_low: "\x1b[38;5;111m",
+        spectrum_spark: "\x1b[38;5;183m",
+    },
+    ThemeEntry {
+        name: "nord",
+        accent: "\x1b[38;5;110m",
+        muted: "\x1b[38;5;145m",
+        value: "\x1b[38;5;152m",
+        title: "\x1b[1;38;5;110m",
+        spectrum_hi: "\x1b[38;5;109m",
+        spectrum_mid: "\x1b[38;5;110m",
+        spectrum_low: "\x1b[38;5;117m",
+        spectrum_spark: "\x1b[38;5;153m",
+    },
+    ThemeEntry {
+        name: "gruvbox",
+        accent: "\x1b[38;5;214m",
+        muted: "\x1b[38;5;244m",
+        value: "\x1b[38;5;223m",
+        title: "\x1b[1;38;5;214m",
+        spectrum_hi: "\x1b[38;5;208m",
+        spectrum_mid: "\x1b[38;5;214m",
+        spectrum_low: "\x1b[38;5;142m",
+        spectrum_spark: "\x1b[38;5;180m",
+    },
+    ThemeEntry {
+        name: "rose-pine",
+        accent: "\x1b[38;5;175m",
+        muted: "\x1b[38;5;145m",
+        value: "\x1b[38;5;182m",
+        title: "\x1b[1;38;5;175m",
+        spectrum_hi: "\x1b[38;5;174m",
+        spectrum_mid: "\x1b[38;5;175m",
+        spectrum_low: "\x1b[38;5;146m",
+        spectrum_spark: "\x1b[38;5;218m",
+    },
+    ThemeEntry {
+        name: "catppuccin",
+        accent: "\x1b[38;5;111m",
+        muted: "\x1b[38;5;146m",
+        value: "\x1b[38;5;189m",
+        title: "\x1b[1;38;5;111m",
+        spectrum_hi: "\x1b[38;5;111m",
+        spectrum_mid: "\x1b[38;5;147m",
+        spectrum_low: "\x1b[38;5;117m",
+        spectrum_spark: "\x1b[38;5;176m",
+    },
+    ThemeEntry {
+        name: "catppuccin-latte",
+        accent: "\x1b[38;5;61m",
+        muted: "\x1b[38;5;102m",
+        value: "\x1b[38;5;68m",
+        title: "\x1b[1;38;5;61m",
+        spectrum_hi: "\x1b[38;5;61m",
+        spectrum_mid: "\x1b[38;5;68m",
+        spectrum_low: "\x1b[38;5;109m",
+        spectrum_spark: "\x1b[38;5;132m",
+    },
+    ThemeEntry {
+        name: "kanagawa",
+        accent: "\x1b[38;5;150m",
+        muted: "\x1b[38;5;145m",
+        value: "\x1b[38;5;186m",
+        title: "\x1b[1;38;5;150m",
+        spectrum_hi: "\x1b[38;5;180m",
+        spectrum_mid: "\x1b[38;5;150m",
+        spectrum_low: "\x1b[38;5;109m",
+        spectrum_spark: "\x1b[38;5;186m",
+    },
+    ThemeEntry {
+        name: "everforest",
+        accent: "\x1b[38;5;108m",
+        muted: "\x1b[38;5;145m",
+        value: "\x1b[38;5;151m",
+        title: "\x1b[1;38;5;108m",
+        spectrum_hi: "\x1b[38;5;143m",
+        spectrum_mid: "\x1b[38;5;108m",
+        spectrum_low: "\x1b[38;5;71m",
+        spectrum_spark: "\x1b[38;5;180m",
+    },
+    ThemeEntry {
+        name: "ayu-mirage-dark",
+        accent: "\x1b[38;5;221m",
+        muted: "\x1b[38;5;145m",
+        value: "\x1b[38;5;229m",
+        title: "\x1b[1;38;5;221m",
+        spectrum_hi: "\x1b[38;5;215m",
+        spectrum_mid: "\x1b[38;5;221m",
+        spectrum_low: "\x1b[38;5;150m",
+        spectrum_spark: "\x1b[38;5;222m",
+    },
+    ThemeEntry {
+        name: "matte-black",
+        accent: "\x1b[38;5;250m",
+        muted: "\x1b[38;5;244m",
+        value: "\x1b[38;5;255m",
+        title: "\x1b[1;38;5;250m",
+        spectrum_hi: "\x1b[38;5;250m",
+        spectrum_mid: "\x1b[38;5;246m",
+        spectrum_low: "\x1b[38;5;242m",
+        spectrum_spark: "\x1b[38;5;254m",
+    },
+    ThemeEntry {
+        name: "miasma",
+        accent: "\x1b[38;5;176m",
+        muted: "\x1b[38;5;139m",
+        value: "\x1b[38;5;183m",
+        title: "\x1b[1;38;5;176m",
+        spectrum_hi: "\x1b[38;5;176m",
+        spectrum_mid: "\x1b[38;5;140m",
+        spectrum_low: "\x1b[38;5;109m",
+        spectrum_spark: "\x1b[38;5;182m",
+    },
+    ThemeEntry {
+        name: "osaka-jade",
+        accent: "\x1b[38;5;84m",
+        muted: "\x1b[38;5;116m",
+        value: "\x1b[38;5;157m",
+        title: "\x1b[1;38;5;84m",
+        spectrum_hi: "\x1b[38;5;84m",
+        spectrum_mid: "\x1b[38;5;120m",
+        spectrum_low: "\x1b[38;5;157m",
+        spectrum_spark: "\x1b[38;5;159m",
+    },
+    ThemeEntry {
+        name: "ristretto",
+        accent: "\x1b[38;5;180m",
+        muted: "\x1b[38;5;138m",
+        value: "\x1b[38;5;223m",
+        title: "\x1b[1;38;5;180m",
+        spectrum_hi: "\x1b[38;5;180m",
+        spectrum_mid: "\x1b[38;5;179m",
+        spectrum_low: "\x1b[38;5;138m",
+        spectrum_spark: "\x1b[38;5;223m",
+    },
+    ThemeEntry {
+        name: "flexoki-light",
+        accent: "\x1b[38;5;137m",
+        muted: "\x1b[38;5;102m",
+        value: "\x1b[38;5;130m",
+        title: "\x1b[1;38;5;137m",
+        spectrum_hi: "\x1b[38;5;173m",
+        spectrum_mid: "\x1b[38;5;137m",
+        spectrum_low: "\x1b[38;5;101m",
+        spectrum_spark: "\x1b[38;5;166m",
+    },
+    ThemeEntry {
+        name: "ethereal",
+        accent: "\x1b[38;5;171m",
+        muted: "\x1b[38;5;146m",
+        value: "\x1b[38;5;225m",
+        title: "\x1b[1;38;5;171m",
+        spectrum_hi: "\x1b[38;5;171m",
+        spectrum_mid: "\x1b[38;5;177m",
+        spectrum_low: "\x1b[38;5;153m",
+        spectrum_spark: "\x1b[38;5;219m",
+    },
+    ThemeEntry {
+        name: "hackerman",
+        accent: "\x1b[38;5;46m",
+        muted: "\x1b[38;5;71m",
+        value: "\x1b[38;5;118m",
+        title: "\x1b[1;38;5;46m",
+        spectrum_hi: "\x1b[38;5;46m",
+        spectrum_mid: "\x1b[38;5;82m",
+        spectrum_low: "\x1b[38;5;118m",
+        spectrum_spark: "\x1b[38;5;51m",
+    },
+    ThemeEntry {
+        name: "vantablack",
+        accent: "\x1b[38;5;196m",
+        muted: "\x1b[38;5;244m",
+        value: "\x1b[38;5;203m",
+        title: "\x1b[1;38;5;196m",
+        spectrum_hi: "\x1b[38;5;196m",
+        spectrum_mid: "\x1b[38;5;203m",
+        spectrum_low: "\x1b[38;5;210m",
+        spectrum_spark: "\x1b[38;5;215m",
+    },
+    ThemeEntry {
+        name: "Amber",
+        accent: "\x1b[38;5;214m",
+        muted: "\x1b[38;5;180m",
+        value: "\x1b[38;5;222m",
+        title: "\x1b[1;38;5;214m",
+        spectrum_hi: "\x1b[38;5;208m",
+        spectrum_mid: "\x1b[38;5;214m",
+        spectrum_low: "\x1b[38;5;178m",
+        spectrum_spark: "\x1b[38;5;221m",
+    },
+    ThemeEntry {
+        name: "Ice",
+        accent: "\x1b[38;5;117m",
+        muted: "\x1b[38;5;146m",
+        value: "\x1b[38;5;159m",
+        title: "\x1b[1;38;5;117m",
+        spectrum_hi: "\x1b[38;5;111m",
+        spectrum_mid: "\x1b[38;5;117m",
+        spectrum_low: "\x1b[38;5;123m",
+        spectrum_spark: "\x1b[38;5;159m",
+    },
 ];
 
 struct KeymapEntry {
@@ -486,30 +709,23 @@ impl App {
     }
 
     pub fn set_theme_by_name(&mut self, name: &str) -> bool {
-        let normalized = name.trim().to_ascii_lowercase();
+        let normalized = normalize_theme_name(name);
         if normalized.is_empty() || normalized == "default" || normalized == "neo" {
             self.theme_idx = 0;
             return true;
         }
         for (idx, theme) in THEMES.iter().enumerate() {
-            if theme.name.to_ascii_lowercase() == normalized {
+            if normalize_theme_name(theme.name) == normalized {
                 self.theme_idx = idx;
                 return true;
             }
         }
         match normalized.as_str() {
-            "neon" | "neo-mint" => {
+            "neon" | "neo-mint" | "neo_mint" => {
                 self.theme_idx = 0;
                 true
             }
-            "amber" => {
-                self.theme_idx = 1;
-                true
-            }
-            "ice" | "blue" => {
-                self.theme_idx = 2;
-                true
-            }
+            "tokyonight" => self.set_theme_by_name("tokyo-night"),
             _ => false,
         }
     }
@@ -535,10 +751,11 @@ impl App {
     }
 
     fn theme_name(&self) -> &str {
-        THEMES
-            .get(self.theme_idx)
-            .map(|t| t.name)
-            .unwrap_or(THEMES[0].name)
+        self.current_theme().name
+    }
+
+    fn current_theme(&self) -> &ThemeEntry {
+        THEMES.get(self.theme_idx).unwrap_or(&THEMES[0])
     }
 
     fn apply_eq_preset_hotkey(&mut self, hotkey: char) -> bool {
@@ -1490,10 +1707,18 @@ impl App {
 
     fn render_theme_picker(&self) -> Vec<String> {
         let mut lines = vec![self.tr("T H E M E S", "主 题").to_string(), String::new()];
-        for (idx, theme) in THEMES.iter().enumerate() {
+        let max_visible = 14usize;
+        let scroll = self
+            .theme_cursor
+            .saturating_sub(max_visible.saturating_sub(1));
+        for (idx, theme) in THEMES.iter().enumerate().skip(scroll).take(max_visible) {
             let prefix = if idx == self.theme_cursor { "> " } else { "  " };
             let marker = if idx == self.theme_idx { "*" } else { " " };
             lines.push(format!("{prefix}[{marker}] {}", theme.name));
+        }
+        if THEMES.len() > max_visible {
+            lines.push(String::new());
+            lines.push(format!("  {}/{}", self.theme_cursor + 1, THEMES.len()));
         }
         lines.push(String::new());
         lines.push(
@@ -1612,21 +1837,12 @@ impl App {
                 track.artist
             }
         ));
+        lines.push(format!(
+            "  {}: {}",
+            self.tr("Album", "专辑"),
+            self.tr("(unknown)", "（未知）")
+        ));
         lines.push(format!("  {}: {}", self.tr("Path", "路径"), track.path));
-        lines.push(format!(
-            "  {}: {}",
-            self.tr("Stream", "流媒体"),
-            if track.stream {
-                self.tr("yes", "是")
-            } else {
-                self.tr("no", "否")
-            }
-        ));
-        lines.push(format!(
-            "  {}: {}",
-            self.tr("Duration", "时长"),
-            format_duration(self.player.duration())
-        ));
         lines.push(String::new());
         lines.push(self.tr("[Esc/i]Close", "[Esc/i]关闭").to_string());
         lines
@@ -2163,16 +2379,25 @@ impl App {
         if trimmed.is_empty() {
             return content.to_string();
         }
+        let theme = self.current_theme();
 
         if trimmed.starts_with("C L I A M P")
             || trimmed.starts_with("K E Y M A P")
             || trimmed.starts_with("按 键 说 明")
+            || trimmed.starts_with("T R A C K  I N F O")
+            || trimmed.starts_with("曲 目 信 息")
+            || trimmed.starts_with("T H E M E S")
+            || trimmed.starts_with("主 题")
         {
-            return paint(ANSI_TITLE, content);
+            return paint(theme.title, content);
+        }
+
+        if is_track_info_kv_line(trimmed) {
+            return self.colorize_track_info_line(content);
         }
 
         if trimmed.starts_with("♫ ") {
-            return paint(ANSI_YELLOW, content);
+            return paint(theme.value, content);
         }
 
         if trimmed.starts_with("VOL ") || trimmed.starts_with("音量 ") {
@@ -2196,16 +2421,18 @@ impl App {
                 content,
                 ANSI_DIM,
                 &[
-                    ("[Shuffle*]", ANSI_YELLOW),
-                    ("[随机*]", ANSI_YELLOW),
-                    ("[Repeat: All]", ANSI_YELLOW),
-                    ("[循环: 全部]", ANSI_YELLOW),
-                    ("[Repeat: One]", ANSI_YELLOW),
-                    ("[循环: 单曲]", ANSI_YELLOW),
-                    ("[Queue:", ANSI_YELLOW),
-                    ("[队列:", ANSI_YELLOW),
-                    ("[Vis:", ANSI_YELLOW),
-                    ("[可视化:", ANSI_YELLOW),
+                    ("[Shuffle*]", theme.accent),
+                    ("[随机*]", theme.accent),
+                    ("[Repeat: All]", theme.accent),
+                    ("[循环: 全部]", theme.accent),
+                    ("[Repeat: One]", theme.accent),
+                    ("[循环: 单曲]", theme.accent),
+                    ("[Queue:", theme.accent),
+                    ("[队列:", theme.accent),
+                    ("[Vis:", theme.accent),
+                    ("[可视化:", theme.accent),
+                    ("[Theme:", theme.accent),
+                    ("[主题:", theme.accent),
                 ],
             );
         }
@@ -2220,15 +2447,12 @@ impl App {
             return paint(ANSI_RED, content);
         }
 
-        if trimmed.starts_with("[Spc")
-            || trimmed.starts_with("[空格]")
-            || trimmed.starts_with("[a]")
-            || trimmed.starts_with("[↑↓]")
+        if is_shortcut_hint_line(trimmed)
             || trimmed.starts_with('/')
             || trimmed.starts_with("Press ")
             || trimmed.starts_with("按任意键")
         {
-            return paint(ANSI_DIM, content);
+            return self.colorize_shortcut_line(content);
         }
 
         if is_streaming_seek_line(trimmed) {
@@ -2261,33 +2485,74 @@ impl App {
                 ("⏸ 暂停", ANSI_YELLOW_BOLD),
                 ("■ Stopped", ANSI_DIM),
                 ("■ 已停止", ANSI_DIM),
-                ("[Q", ANSI_YELLOW),
+                ("[Q", theme.accent),
             ],
         );
-        styled = styled.replace("[Q", &format!("{ANSI_YELLOW}[Q{ANSI_TEXT}"));
+        styled = styled.replace("[Q", &format!("{}[Q{ANSI_TEXT}", theme.accent));
         styled
     }
 
     fn colorize_spectrum_line(&self, content: &str) -> String {
-        let (hi, mid, low, spark) = match self.theme_idx {
-            1 => ("\x1b[93m", "\x1b[91m", "\x1b[33m", "\x1b[38;5;214m"),
-            2 => ("\x1b[94m", "\x1b[96m", "\x1b[36m", "\x1b[97m"),
-            _ => (ANSI_RED, ANSI_YELLOW, ANSI_GREEN, ANSI_MAGENTA),
-        };
+        let theme = self.current_theme();
 
         let mut out = String::new();
         for ch in content.chars() {
             match ch {
-                '█' | '▉' | '▊' | '▇' | '▆' => out.push_str(&paint(hi, &ch.to_string())),
-                '▓' | '▅' | '▄' => out.push_str(&paint(mid, &ch.to_string())),
-                '▒' | '░' | '▃' | '▂' | '▁' => out.push_str(&paint(low, &ch.to_string())),
-                '\u{2800}'..='\u{28FF}' => out.push_str(&paint(low, &ch.to_string())),
-                '✦' | '•' | '·' | '.' => out.push_str(&paint(spark, &ch.to_string())),
+                '█' | '▉' | '▊' | '▇' | '▆' => {
+                    out.push_str(&paint(theme.spectrum_hi, &ch.to_string()))
+                }
+                '▓' | '▅' | '▄' => out.push_str(&paint(theme.spectrum_mid, &ch.to_string())),
+                '▒' | '░' | '▃' | '▂' | '▁' => {
+                    out.push_str(&paint(theme.spectrum_low, &ch.to_string()))
+                }
+                '\u{2800}'..='\u{28FF}' => {
+                    out.push_str(&paint(theme.spectrum_low, &ch.to_string()))
+                }
+                '✦' | '•' | '·' | '.' => {
+                    out.push_str(&paint(theme.spectrum_spark, &ch.to_string()))
+                }
                 ' ' => out.push(' '),
                 _ => out.push(ch),
             }
         }
         out
+    }
+
+    fn colorize_shortcut_line(&self, content: &str) -> String {
+        let theme = self.current_theme();
+        let mut out = String::new();
+        let mut in_bracket = false;
+
+        for ch in content.chars() {
+            match ch {
+                '[' => {
+                    in_bracket = true;
+                    out.push_str(&paint(theme.muted, "["));
+                }
+                ']' => {
+                    in_bracket = false;
+                    out.push_str(&paint(theme.muted, "]"));
+                }
+                ' ' => out.push(' '),
+                _ => {
+                    if in_bracket {
+                        out.push_str(&paint(theme.accent, &ch.to_string()));
+                    } else {
+                        out.push_str(&paint(theme.muted, &ch.to_string()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn colorize_track_info_line(&self, content: &str) -> String {
+        let theme = self.current_theme();
+        if let Some(idx) = content.find(':') {
+            let (label, rest) = content.split_at(idx + 1);
+            return format!("{}{}", paint(theme.muted, label), paint(theme.value, rest));
+        }
+        paint(theme.value, content)
     }
 }
 
@@ -2482,16 +2747,41 @@ fn is_spectrum_line(trimmed: &str) -> bool {
     has_bar
 }
 
-fn format_duration(duration: Duration) -> String {
-    let total = duration.as_secs();
-    let h = total / 3600;
-    let m = (total % 3600) / 60;
-    let s = total % 60;
-    if h > 0 {
-        format!("{h:02}:{m:02}:{s:02}")
-    } else {
-        format!("{m:02}:{s:02}")
+fn is_track_info_kv_line(trimmed: &str) -> bool {
+    const LABELS: [&str; 12] = [
+        "Title:",
+        "Artist:",
+        "Album:",
+        "Path:",
+        "Stream:",
+        "Duration:",
+        "标题:",
+        "艺术家:",
+        "专辑:",
+        "路径:",
+        "流媒体:",
+        "时长:",
+    ];
+    LABELS.iter().any(|label| trimmed.starts_with(label))
+}
+
+fn is_shortcut_hint_line(trimmed: &str) -> bool {
+    if trimmed.starts_with("── ") {
+        return false;
     }
+    let bracketed = trimmed.contains('[') && trimmed.contains(']');
+    bracketed
+        && (trimmed.starts_with('[')
+            || trimmed.starts_with("> [")
+            || trimmed.starts_with("  [")
+            || trimmed.contains(" ["))
+}
+
+fn normalize_theme_name(name: &str) -> String {
+    name.trim()
+        .to_ascii_lowercase()
+        .replace('_', "-")
+        .replace(' ', "-")
 }
 
 fn sanitize_filename(name: &str) -> String {

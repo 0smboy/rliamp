@@ -21,6 +21,7 @@ This branch is synced with key upstream updates through **2026-03-01** (feature 
 - full-screen visualizer mode (`V`)
 - interactive keymap (`Ctrl+K`, supports up/down navigation)
 - theme picker (`t`)
+- expanded built-in themes: `Neo Mint`, `tokyo-night`, `nord`, `gruvbox`, `rose-pine`, `catppuccin`, `kanagawa`, `everforest`, `hackerman`, `vantablack`, etc.
 - track info overlay (`i`)
 - queue manager (`A`) and playlist manager (`p`)
 - save local track to `~/Music` (`S`)
@@ -39,6 +40,7 @@ This branch is synced with key upstream updates through **2026-03-01** (feature 
 - Gapless playback for local file queues (auto-preload next track).
 - Real-time 10-band spectrum visualization with six modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`).
 - Full-screen visualizer mode (`V`), plus interactive keymap/theme/info overlays.
+- Shortcut hints (content inside `[...]`) are theme-accent highlighted.
 - Queue manager (`A`) and playlist manager (`p`) overlays.
 - Save current local track to `~/Music` (`S`).
 - 10-band parametric EQ with built-in presets.
@@ -95,6 +97,7 @@ cargo run -- /path/to/*.mp3
 # start immediately with overrides
 cargo run -- --auto-play --shuffle --volume -5 /path/to/Music
 cargo run -- --theme Amber --eq-preset "Rock" /path/to/Music
+cargo run -- --theme tokyo-night /path/to/Music
 
 # recursive directory scan
 cargo run -- /path/to/Music
