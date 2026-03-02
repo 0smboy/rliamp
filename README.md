@@ -189,7 +189,7 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `g` | Toggle matrix background |
 | `e` | Cycle EQ preset |
 | `t` | Choose theme |
-| `c` / `v` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame) |
+| `c` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame) |
 | `V` | Toggle full-screen visualizer |
 | `1` `2` `3` `4` `5` `6` | Apply custom EQ mode |
 | `u` | Toggle UI language (EN / ZH) |

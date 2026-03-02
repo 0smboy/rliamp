@@ -322,7 +322,7 @@ const KEYMAP_ENTRIES: [KeymapEntry; 30] = [
         action_zh: "选择主题",
     },
     KeymapEntry {
-        key: "c / v",
+        key: "c",
         action_en: "Cycle visualizer",
         action_zh: "循环切换频谱",
     },
@@ -1050,7 +1050,7 @@ impl App {
                 }
             }
             KeyCode::Char('e') | KeyCode::Char('E') => self.cycle_eq_preset(),
-            KeyCode::Char('c') | KeyCode::Char('C') | KeyCode::Char('v') => self.vis.cycle_mode(),
+            KeyCode::Char('c') | KeyCode::Char('C') => self.vis.cycle_mode(),
             KeyCode::Char('V') => self.full_vis = !self.full_vis,
             KeyCode::Char('m') | KeyCode::Char('M') => self.player.toggle_mono(),
             KeyCode::Char('a') => {
@@ -1860,8 +1860,8 @@ impl App {
         lines.push(String::new());
         lines.push(
             self.tr(
-                "[V/Esc]Exit full visualizer [c/v]Mode [t]Theme",
-                "[V/Esc]退出全屏 [c/v]切换频谱 [t]主题",
+                "[V/Esc]Exit full visualizer [c]Mode [t]Theme",
+                "[V/Esc]退出全屏 [c]切换频谱 [t]主题",
             )
             .to_string(),
         );
@@ -2252,8 +2252,8 @@ impl App {
             line1.push_str(self.tr("[←→]Seek ", "[←→]快进/退 "));
         }
         line1.push_str(self.tr(
-            "[+-]Vol [m]Mono [e]EQ [c/v]Vis [V]Full [t]Theme [u]Lang [i]Info",
-            "[+-]音量 [m]单声道 [e]EQ [c/v]频谱 [V]全屏 [t]主题 [u]语言 [i]信息",
+            "[+-]Vol [m]Mono [e]EQ [c]Vis [V]Full [t]Theme [u]Lang [i]Info",
+            "[+-]音量 [m]单声道 [e]EQ [c]频谱 [V]全屏 [t]主题 [u]语言 [i]信息",
         ));
 
         let mut line2 = String::new();
