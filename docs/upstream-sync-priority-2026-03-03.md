@@ -49,7 +49,7 @@
   - CPU usage drops significantly when visualizer is off
   - behavior is stable when toggling on/off repeatedly
 
-2. [ ] Navidrome config-section + browser improvements (`fab9eb7`, `74e562f`, `0daddce`)
+2. [x] Navidrome config-section + browser improvements (`fab9eb7`, `74e562f`, `0daddce`) — completed in `54ba028`
 - Why: env-only setup is less manageable; upstream moved to config section and expanded browser flow.
 - Land in this repo:
   - `src/config.rs`: add `[navidrome]` section parsing (URL/user/pass/token).
