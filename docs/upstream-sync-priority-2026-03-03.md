@@ -10,7 +10,7 @@
 
 ### P0 (Must sync first, release-impacting)
 
-1. Security and robustness hardening (`f2411eb`)
+1. [x] Security and robustness hardening (`f2411eb`) — completed in `4dc8f45`
 - Why: includes multiple bug/security class fixes (path traversal, provider error handling, process/resource issues).
 - Land in this repo:
   - `src/navidrome.rs`: strengthen Subsonic/Navidrome response error checks and non-200 handling.
@@ -21,7 +21,7 @@
   - no residual ffmpeg child process after repeated stream start/stop cycles
   - path traversal vectors in playlist entries are rejected or safely normalized
 
-2. Stream compatibility for radio/AAC+ (`e254668`)
+2. [ ] Stream compatibility for radio/AAC+ (`e254668`)
 - Why: directly affects “can play / cannot play” for real-world stations.
 - Land in this repo:
   - `src/player.rs`: add/adjust streaming ffmpeg decode path for AAC+ cases.
@@ -30,7 +30,7 @@
   - known AAC+ station URLs that previously failed can play continuously
   - no early EOF regressions for common radio streams
 
-3. Content sniff for feed/playlist detection (`fbd6ade`)
+3. [ ] Content sniff for feed/playlist detection (`fbd6ade`)
 - Why: many feed URLs do not end with `.xml/.m3u/.pls`; extension-only detection misses valid sources.
 - Land in this repo:
   - `src/main.rs`: when URL suffix is ambiguous, inspect `Content-Type` and/or body prefix before resolver routing.
@@ -40,7 +40,7 @@
 
 ### P1 (High value, should follow P0)
 
-1. Visualizer-off resource optimization (`7e50a54`, `ddd6cb5`)
+1. [ ] Visualizer-off resource optimization (`7e50a54`, `ddd6cb5`)
 - Why: measurable CPU/GPU savings on laptops and remote terminals.
 - Land in this repo:
   - `src/visualizer.rs`: add `VisNone`.
@@ -49,7 +49,7 @@
   - CPU usage drops significantly when visualizer is off
   - behavior is stable when toggling on/off repeatedly
 
-2. Navidrome config-section + browser improvements (`fab9eb7`, `74e562f`, `0daddce`)
+2. [ ] Navidrome config-section + browser improvements (`fab9eb7`, `74e562f`, `0daddce`)
 - Why: env-only setup is less manageable; upstream moved to config section and expanded browser flow.
 - Land in this repo:
   - `src/config.rs`: add `[navidrome]` section parsing (URL/user/pass/token).
@@ -58,7 +58,7 @@
   - provider works from config file without env vars
   - empty/error provider states are recoverable in UI
 
-3. Legacy metadata decoding robustness (`ff71b42`)
+3. [ ] Legacy metadata decoding robustness (`ff71b42`)
 - Why: improves display correctness for non-Latin tags.
 - Land in this repo:
   - `src/playlist.rs` (and metadata extraction paths): add charset fallback decode.
@@ -67,13 +67,13 @@
 
 ### P2 (Optional / UX polish)
 
-1. 80s synthwave visualizer (`9bddb3e`)
+1. [ ] 80s synthwave visualizer (`9bddb3e`)
 - Visual polish feature; not playback-critical.
 
-2. UI redesign batch (`b6987e4`, parts of `ed8b58c`)
+2. [ ] UI redesign batch (`b6987e4`, parts of `ed8b58c`)
 - Mostly presentation adjustments; can defer.
 
-3. Site/homebrew workflow/document formatting commits
+3. [ ] Site/homebrew workflow/document formatting commits
 - Mostly upstream website/release pipeline concerns; not core runtime behavior.
 
 ## Suggested Execution Order
