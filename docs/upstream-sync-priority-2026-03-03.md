@@ -21,7 +21,7 @@
   - no residual ffmpeg child process after repeated stream start/stop cycles
   - path traversal vectors in playlist entries are rejected or safely normalized
 
-2. [~] Stream compatibility for radio/AAC+ (`e254668`) — partial landing in `TBD`
+2. [~] Stream compatibility for radio/AAC+ (`e254668`) — partial landing in `f8a4ec1`
 - Why: directly affects “can play / cannot play” for real-world stations.
 - Land in this repo:
   - `src/player.rs`: add/adjust streaming ffmpeg decode path for AAC+ cases.
