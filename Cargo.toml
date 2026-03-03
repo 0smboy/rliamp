@@ -27,3 +27,4 @@ syn = "=2.0.60"
 symphonia = { version = "0.5.2", features = ["mp3", "aac", "isomp4", "alac", "flac", "ogg", "vorbis", "wav"] }
 unicode-ident = "=1.0.12"
 unicode-width = "0.1"
+encoding_rs = "0.8"

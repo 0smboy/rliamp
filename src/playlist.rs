@@ -1,6 +1,13 @@
+use encoding_rs::{WINDOWS_1251, WINDOWS_1253, WINDOWS_1255, WINDOWS_1256, WINDOWS_874};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use std::fs::File;
 use std::path::Path;
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::{MetadataOptions, StandardTagKey, Tag};
+use symphonia::core::probe::Hint;
+use symphonia::default::get_probe;
 use urlencoding::decode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,35 +60,11 @@ impl Track {
             return track_from_url(path);
         }
 
-        let base = Path::new(&path)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(path.as_str())
-            .to_string();
-
-        let name = Path::new(&base)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(base.as_str())
-            .to_string();
-
-        if let Some((artist, title)) = name.as_str().split_once(" - ") {
-            return Track {
-                path,
-                title: title.trim().to_string(),
-                artist: artist.trim().to_string(),
-                stream: false,
-                ytdlp: false,
-            };
+        if let Some(track) = track_from_embedded_tags(&path) {
+            return track;
         }
 
-        Track {
-            path,
-            title: name.to_string(),
-            artist: String::new(),
-            stream: false,
-            ytdlp: false,
-        }
+        track_from_filename(path)
     }
 
     pub fn display_name(&self) -> String {
@@ -90,6 +73,207 @@ impl Track {
         } else {
             format!("{} - {}", self.artist, self.title)
         }
+    }
+}
+
+fn track_from_embedded_tags(path: &str) -> Option<Track> {
+    let file = File::open(path).ok()?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = Path::new(path).extension().and_then(|s| s.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let mut probed = get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .ok()?;
+
+    let mut title: Option<String> = None;
+    let mut artist: Option<String> = None;
+
+    if let Some(mut metadata) = probed.metadata.get() {
+        extract_tags_from_log(&mut metadata, &mut title, &mut artist);
+    }
+    {
+        let mut metadata = probed.format.metadata();
+        extract_tags_from_log(&mut metadata, &mut title, &mut artist);
+    }
+
+    if title.is_none() && artist.is_none() {
+        return None;
+    }
+
+    let mut track = track_from_filename(path.to_string());
+    if let Some(value) = title {
+        track.title = value;
+    }
+    if let Some(value) = artist {
+        track.artist = value;
+    }
+    Some(track)
+}
+
+fn track_from_filename(path: String) -> Track {
+    let base = Path::new(&path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path.as_str())
+        .to_string();
+
+    let name = Path::new(&base)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(base.as_str())
+        .to_string();
+
+    if let Some((artist, title)) = name.as_str().split_once(" - ") {
+        return Track {
+            path,
+            title: title.trim().to_string(),
+            artist: artist.trim().to_string(),
+            stream: false,
+            ytdlp: false,
+        };
+    }
+
+    Track {
+        path,
+        title: name,
+        artist: String::new(),
+        stream: false,
+        ytdlp: false,
+    }
+}
+
+fn extract_tags_from_log(
+    metadata: &mut symphonia::core::meta::Metadata<'_>,
+    title: &mut Option<String>,
+    artist: &mut Option<String>,
+) {
+    loop {
+        if let Some(rev) = metadata.current() {
+            extract_tags(rev.tags(), title, artist);
+            if title.is_some() && artist.is_some() {
+                return;
+            }
+        }
+        if metadata.pop().is_none() {
+            return;
+        }
+    }
+}
+
+fn extract_tags(tags: &[Tag], title: &mut Option<String>, artist: &mut Option<String>) {
+    for tag in tags {
+        let value = sanitize_tag(tag.value.to_string());
+        if value.is_empty() {
+            continue;
+        }
+
+        match tag.std_key {
+            Some(StandardTagKey::TrackTitle) | Some(StandardTagKey::SortTrackTitle) => {
+                assign_if_empty(title, value.clone());
+            }
+            Some(StandardTagKey::Artist)
+            | Some(StandardTagKey::AlbumArtist)
+            | Some(StandardTagKey::OriginalArtist)
+            | Some(StandardTagKey::Performer) => {
+                assign_if_empty(artist, value.clone());
+            }
+            _ => {}
+        }
+
+        let key = tag.key.to_ascii_lowercase();
+        if key == "title" || key == "tracktitle" {
+            assign_if_empty(title, value.clone());
+        } else if key == "artist" || key == "albumartist" || key == "performer" || key == "author" {
+            assign_if_empty(artist, value.clone());
+        }
+    }
+}
+
+fn assign_if_empty(target: &mut Option<String>, value: String) {
+    if target
+        .as_ref()
+        .map(|current| current.trim().is_empty())
+        .unwrap_or(true)
+    {
+        *target = Some(value);
+    }
+}
+
+fn sanitize_tag(raw: String) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut total = 0usize;
+    let mut high = 0usize;
+    for ch in trimmed.chars() {
+        total += 1;
+        if ('\u{0080}'..='\u{00FF}').contains(&ch) {
+            high += 1;
+        }
+    }
+    if total == 0 || high * 3 < total {
+        return trimmed.to_string();
+    }
+
+    let mut raw_bytes = Vec::with_capacity(total);
+    for ch in trimmed.chars() {
+        if (ch as u32) > 0xFF {
+            return trimmed.to_string();
+        }
+        raw_bytes.push(ch as u8);
+    }
+
+    if let Ok(decoded_utf8) = String::from_utf8(raw_bytes.clone()) {
+        if !decoded_utf8.trim().is_empty() {
+            return decoded_utf8.trim().to_string();
+        }
+    }
+
+    let encodings = [
+        WINDOWS_1255,
+        WINDOWS_1256,
+        WINDOWS_1251,
+        WINDOWS_1253,
+        WINDOWS_874,
+    ];
+
+    let mut best_text = String::new();
+    let mut best_score = 0usize;
+    for encoding in encodings {
+        let (decoded, _, had_errors) = encoding.decode(&raw_bytes);
+        if had_errors {
+            continue;
+        }
+        let candidate = decoded.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+
+        let score = candidate
+            .chars()
+            .filter(|ch| ch.is_alphabetic() && *ch > '\u{024F}')
+            .count();
+        if score > best_score {
+            best_score = score;
+            best_text = candidate.to_string();
+        }
+    }
+
+    if !best_text.is_empty() {
+        best_text
+    } else {
+        trimmed.to_string()
     }
 }
 

@@ -1071,6 +1071,7 @@ dependencies = [
  "coreaudio-sys",
  "cpal",
  "crossterm",
+ "encoding_rs",
  "glob",
  "libloading",
  "lock_api",
