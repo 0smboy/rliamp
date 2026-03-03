@@ -28,6 +28,7 @@ pub enum VisualizerMode {
     Wave,
     Scatter,
     Flame,
+    Retro,
     None,
 }
 
@@ -63,7 +64,8 @@ impl Visualizer {
             VisualizerMode::Columns => VisualizerMode::Wave,
             VisualizerMode::Wave => VisualizerMode::Scatter,
             VisualizerMode::Scatter => VisualizerMode::Flame,
-            VisualizerMode::Flame => VisualizerMode::None,
+            VisualizerMode::Flame => VisualizerMode::Retro,
+            VisualizerMode::Retro => VisualizerMode::None,
             VisualizerMode::None => VisualizerMode::Neon,
         };
     }
@@ -76,6 +78,7 @@ impl Visualizer {
             VisualizerMode::Wave => "Wave",
             VisualizerMode::Scatter => "Scatter",
             VisualizerMode::Flame => "Flame",
+            VisualizerMode::Retro => "Retro",
             VisualizerMode::None => "Off",
         }
     }
@@ -167,6 +170,7 @@ impl Visualizer {
             VisualizerMode::Wave => self.render_wave(),
             VisualizerMode::Scatter => self.render_scatter(bands),
             VisualizerMode::Flame => self.render_flame(bands),
+            VisualizerMode::Retro => self.render_retro(bands),
             VisualizerMode::None => self.render_none(),
         }
     }
@@ -403,6 +407,89 @@ impl Visualizer {
         }
 
         lines
+    }
+
+    fn render_retro(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
+        let rows = self.rows.max(4);
+        let width = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
+        let horizon = (rows / 2).clamp(1, rows.saturating_sub(2));
+        let center = width / 2;
+        let mut canvas = vec![vec![' '; width]; rows];
+
+        // Upper-half "sun" using block shades, striped to mimic synthwave style.
+        let radius = (horizon as f32 * 0.95).max(2.0);
+        for y in 0..=horizon {
+            let dy = horizon as f32 - y as f32;
+            let span = ((radius * radius - dy * dy).max(0.0)).sqrt() as isize;
+            let left = (center as isize - span).max(0);
+            let right = (center as isize + span).min(width.saturating_sub(1) as isize);
+            if left > right {
+                continue;
+            }
+            for x in left..=right {
+                canvas[y][x as usize] = if y % 2 == 0 { '░' } else { '▒' };
+            }
+        }
+
+        // Interpolate a smooth wave from the ten FFT bands and place it above the horizon.
+        let mut columns = vec![0.0f32; width];
+        for x in 0..width {
+            let pos = x as f32 / (width.saturating_sub(1).max(1)) as f32 * (NUM_BANDS - 1) as f32;
+            let lo = pos.floor() as usize;
+            let hi = (lo + 1).min(NUM_BANDS - 1);
+            let t = pos - lo as f32;
+            columns[x] = bands[lo] * (1.0 - t) + bands[hi] * t;
+        }
+        for (x, level) in columns.iter().enumerate() {
+            let amp = *level * horizon.max(1) as f32;
+            let y = (horizon as f32 - amp).round().clamp(0.0, horizon as f32) as usize;
+            canvas[y][x] = '█';
+            if y + 1 <= horizon && canvas[y + 1][x] == ' ' {
+                canvas[y + 1][x] = '▄';
+            }
+        }
+
+        // Horizon line.
+        for x in 0..width {
+            if canvas[horizon][x] == ' ' {
+                canvas[horizon][x] = '▁';
+            }
+        }
+
+        // Lower-half perspective grid.
+        let depth_rows = rows.saturating_sub(horizon + 1).max(1);
+        let lanes = 8usize;
+        for y in (horizon + 1)..rows {
+            let depth = (y - horizon) as f32 / depth_rows as f32;
+
+            if (y - horizon) % 2 == 0 {
+                for x in 0..width {
+                    if canvas[y][x] == ' ' {
+                        canvas[y][x] = '▒';
+                    }
+                }
+            }
+
+            let spread = width as f32 * 0.92 * depth;
+            for lane in 0..=lanes {
+                let t = lane as f32 / lanes as f32;
+                let x = (center as f32 + (t - 0.5) * spread).round() as isize;
+                if x < 0 || x >= width as isize {
+                    continue;
+                }
+                let cell = &mut canvas[y][x as usize];
+                *cell = match *cell {
+                    '▒' => '▓',
+                    ' ' => '░',
+                    current => current,
+                };
+            }
+        }
+
+        canvas
+            .into_iter()
+            .map(|row| row.into_iter().collect::<String>())
+            .collect()
     }
 }
 

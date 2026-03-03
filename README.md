@@ -17,7 +17,7 @@ This branch is synced with key upstream updates through **2026-03-01** (feature 
 - local playlist file expansion for `.m3u`, `.m3u8`, `.pls`
 - gapless playback with automatic next-track preload
 - yt-dlp input support (SoundCloud / YouTube / Bandcamp)
-- visualizer mode toggle (`Neon` / `Bricks` / `Columns` / `Wave` / `Scatter` / `Flame` / `Off`)
+- visualizer mode toggle (`Neon` / `Bricks` / `Columns` / `Wave` / `Scatter` / `Flame` / `Retro` / `Off`)
 - full-screen visualizer mode (`V`)
 - interactive keymap (`Ctrl+K`, supports up/down navigation)
 - theme picker (`t`)
@@ -41,7 +41,7 @@ Pending upstream sync priorities (as of **2026-03-03**, upstream `v1.12.3`~`v1.1
 - Local and remote M3U/PLS playlist expansion, plus podcast RSS feed support.
 - SoundCloud / YouTube / Bandcamp URL support via `yt-dlp`.
 - Gapless playback for local file queues (auto-preload next track).
-- Real-time 10-band spectrum visualization with seven modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`, `Off`).
+- Real-time 10-band spectrum visualization with eight modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`, `Retro`, `Off`).
 - Full-screen visualizer mode (`V`), plus interactive keymap/theme/info overlays.
 - Shortcut hints (content inside `[...]`) are theme-accent highlighted.
 - Queue manager (`A`) and playlist manager (`p`) overlays.
@@ -214,7 +214,7 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `g` | Toggle matrix background |
 | `e` | Cycle EQ preset |
 | `t` | Choose theme |
-| `c` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame / Off) |
+| `c` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame / Retro / Off) |
 | `V` | Toggle full-screen visualizer |
 | `1` `2` `3` `4` `5` `6` | Apply custom EQ mode |
 | `u` | Toggle UI language (EN / ZH) |
