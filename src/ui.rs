@@ -33,6 +33,8 @@ const ANSI_RED: &str = "\x1b[91m";
 
 const DEFAULT_VIS_ROWS: usize = 4;
 const EXPANDED_VIS_ROWS: usize = 20;
+const TICK_MS_ACTIVE: u64 = 50;
+const TICK_MS_VIS_OFF: u64 = 200;
 
 struct ThemeEntry {
     name: &'static str,
@@ -323,8 +325,8 @@ const KEYMAP_ENTRIES: [KeymapEntry; 30] = [
     },
     KeymapEntry {
         key: "c",
-        action_en: "Cycle visualizer",
-        action_zh: "循环切换频谱",
+        action_en: "Cycle visualizer (incl. Off)",
+        action_zh: "循环切换频谱（含关闭）",
     },
     KeymapEntry {
         key: "V",
@@ -838,7 +840,6 @@ impl App {
     }
 
     fn run_loop(&mut self, stdout: &mut io::Stdout) -> Result<()> {
-        let tick_rate = Duration::from_millis(50);
         let mut last_tick = Instant::now();
 
         if self.auto_play && self.playlist.len() > 0 {
@@ -852,6 +853,7 @@ impl App {
         loop {
             self.draw(stdout)?;
 
+            let tick_rate = self.tick_rate();
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
             if event::poll(timeout)? {
                 if let Event::Key(key) = event::read()? {
@@ -1624,6 +1626,14 @@ impl App {
             .unwrap_or(false)
     }
 
+    fn tick_rate(&self) -> Duration {
+        if self.vis.is_disabled() && !self.full_vis {
+            Duration::from_millis(TICK_MS_VIS_OFF)
+        } else {
+            Duration::from_millis(TICK_MS_ACTIVE)
+        }
+    }
+
     fn render(&mut self) -> String {
         if self.show_keymap {
             return wrap_frame(self.render_keymap());
@@ -1950,6 +1960,10 @@ impl App {
             DEFAULT_VIS_ROWS
         };
         self.vis.set_rows(rows);
+        if self.vis.is_disabled() {
+            let bands = self.vis.analyze(&[]);
+            return self.vis.render(bands, self.title_off as u64);
+        }
         let bands = self.vis.analyze(&self.player.samples(2048));
         self.vis.render(bands, self.title_off as u64)
     }

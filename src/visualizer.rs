@@ -28,6 +28,7 @@ pub enum VisualizerMode {
     Wave,
     Scatter,
     Flame,
+    None,
 }
 
 const BRAILLE_BITS: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
@@ -62,7 +63,8 @@ impl Visualizer {
             VisualizerMode::Columns => VisualizerMode::Wave,
             VisualizerMode::Wave => VisualizerMode::Scatter,
             VisualizerMode::Scatter => VisualizerMode::Flame,
-            VisualizerMode::Flame => VisualizerMode::Neon,
+            VisualizerMode::Flame => VisualizerMode::None,
+            VisualizerMode::None => VisualizerMode::Neon,
         };
     }
 
@@ -74,11 +76,21 @@ impl Visualizer {
             VisualizerMode::Wave => "Wave",
             VisualizerMode::Scatter => "Scatter",
             VisualizerMode::Flame => "Flame",
+            VisualizerMode::None => "Off",
         }
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        matches!(self.mode, VisualizerMode::None)
     }
 
     pub fn analyze(&mut self, samples: &[f32]) -> [f32; NUM_BANDS] {
         let mut bands = [0.0; NUM_BANDS];
+        if matches!(self.mode, VisualizerMode::None) {
+            self.wave_buf.clear();
+            self.prev = [0.0; NUM_BANDS];
+            return bands;
+        }
         self.frame = self.frame.wrapping_add(1);
 
         self.wave_buf.clear();
@@ -155,7 +167,14 @@ impl Visualizer {
             VisualizerMode::Wave => self.render_wave(),
             VisualizerMode::Scatter => self.render_scatter(bands),
             VisualizerMode::Flame => self.render_flame(bands),
+            VisualizerMode::None => self.render_none(),
         }
+    }
+
+    fn render_none(&self) -> Vec<String> {
+        let rows = self.rows.max(2);
+        let width = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
+        vec![" ".repeat(width); rows]
     }
 
     fn render_neon(&self, bands: [f32; NUM_BANDS], phase: u64) -> Vec<String> {
