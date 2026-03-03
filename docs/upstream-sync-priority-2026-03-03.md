@@ -40,7 +40,7 @@
 
 ### P1 (High value, should follow P0)
 
-1. [ ] Visualizer-off resource optimization (`7e50a54`, `ddd6cb5`)
+1. [x] Visualizer-off resource optimization (`7e50a54`, `ddd6cb5`) — completed in `8592f3b`
 - Why: measurable CPU/GPU savings on laptops and remote terminals.
 - Land in this repo:
   - `src/visualizer.rs`: add `VisNone`.
