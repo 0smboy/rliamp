@@ -67,7 +67,7 @@
 
 ### P2 (Optional / UX polish)
 
-1. [ ] 80s synthwave visualizer (`9bddb3e`)
+1. [x] 80s synthwave visualizer (`9bddb3e`) — completed in `12c7ef3`
 - Visual polish feature; not playback-critical.
 
 2. [ ] UI redesign batch (`b6987e4`, parts of `ed8b58c`)
