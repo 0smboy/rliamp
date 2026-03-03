@@ -73,7 +73,7 @@
 2. [~] UI redesign batch (`b6987e4`, parts of `ed8b58c`) — partial landing in `4712976`
 - Mostly presentation adjustments; can defer.
 
-3. [ ] Site/homebrew workflow/document formatting commits
+3. [x] Site/homebrew workflow/document formatting commits — completed in `ed4bd62`
 - Mostly upstream website/release pipeline concerns; not core runtime behavior.
 
 ## Suggested Execution Order
