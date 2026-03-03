@@ -21,7 +21,7 @@
   - no residual ffmpeg child process after repeated stream start/stop cycles
   - path traversal vectors in playlist entries are rejected or safely normalized
 
-2. [~] Stream compatibility for radio/AAC+ (`e254668`) — partial landing in `f8a4ec1`
+2. [x] Stream compatibility for radio/AAC+ (`e254668`) — completed in `cc900ec`
 - Why: directly affects “can play / cannot play” for real-world stations.
 - Land in this repo:
   - `src/player.rs`: add/adjust streaming ffmpeg decode path for AAC+ cases.
@@ -70,7 +70,7 @@
 1. [x] 80s synthwave visualizer (`9bddb3e`) — completed in `12c7ef3`
 - Visual polish feature; not playback-critical.
 
-2. [~] UI redesign batch (`b6987e4`, parts of `ed8b58c`) — partial landing in `4712976`
+2. [x] UI redesign batch (`b6987e4`, parts of `ed8b58c`) — completed in `fdb3dde`
 - Mostly presentation adjustments; can defer.
 
 3. [x] Site/homebrew workflow/document formatting commits — completed in `ed4bd62`
