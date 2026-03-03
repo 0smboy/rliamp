@@ -2041,9 +2041,9 @@ impl App {
             format!("{:.0}Hz", sr.round())
         };
         if self.lang == UiLang::Zh {
-            format!("输出 {sr_label}")
+            format!("输出 {sr_label} · 重采样 线性")
         } else {
-            format!("OUT {sr_label}")
+            format!("OUT {sr_label} · Resample Linear")
         }
     }
 
@@ -2732,9 +2732,23 @@ fn colorize_volume_line(content: &str) -> String {
                 '█' => out.push_str(&paint(ANSI_VOLUME, &ch.to_string())),
                 '░' => out.push_str(&paint(ANSI_DIM, &ch.to_string())),
                 ' ' => out.push(' '),
-                _ => out.push_str(&paint(ANSI_DIM, &ch.to_string())),
+                _ => out.push(ch),
             }
         }
+        out = colorize_tokens(
+            &out,
+            ANSI_DIM,
+            &[
+                ("OUT", ANSI_TEXT_BOLD),
+                ("输出", ANSI_TEXT_BOLD),
+                ("Resample", ANSI_TEXT_BOLD),
+                ("重采样", ANSI_TEXT_BOLD),
+                ("Linear", ANSI_YELLOW_BOLD),
+                ("线性", ANSI_YELLOW_BOLD),
+                ("kHz", ANSI_YELLOW_BOLD),
+                ("Hz", ANSI_YELLOW_BOLD),
+            ],
+        );
         if let Some(label) = mono_label {
             out.push(' ');
             out.push_str(&paint(ANSI_YELLOW_BOLD, label));
