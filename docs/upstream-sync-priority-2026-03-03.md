@@ -30,7 +30,7 @@
   - known AAC+ station URLs that previously failed can play continuously
   - no early EOF regressions for common radio streams
 
-3. [ ] Content sniff for feed/playlist detection (`fbd6ade`)
+3. [x] Content sniff for feed/playlist detection (`fbd6ade`)
 - Why: many feed URLs do not end with `.xml/.m3u/.pls`; extension-only detection misses valid sources.
 - Land in this repo:
   - `src/main.rs`: when URL suffix is ambiguous, inspect `Content-Type` and/or body prefix before resolver routing.

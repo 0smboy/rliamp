@@ -17,8 +17,10 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Default)]
 struct CliOverrides {
@@ -36,6 +38,14 @@ enum CliAction {
     Run,
     Help,
     Version,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteInputKind {
+    Feed,
+    M3u,
+    Pls,
+    Other,
 }
 
 const HELP_TEXT: &str = r#"rliamp — retro terminal music player
@@ -105,22 +115,26 @@ fn run() -> Result<()> {
 
     for arg in args {
         if is_url(&arg) {
-            if is_feed(&arg) {
-                resolved_tracks
-                    .extend(resolve_feed(&arg).with_context(|| format!("resolving feed: {arg}"))?);
-            } else if is_m3u(&arg) {
-                resolved_tracks
-                    .extend(resolve_m3u(&arg).with_context(|| format!("resolving m3u: {arg}"))?);
-            } else if is_pls(&arg) {
-                resolved_tracks
-                    .extend(resolve_pls(&arg).with_context(|| format!("resolving pls: {arg}"))?);
-            } else if is_ytdl(&arg) {
+            if is_ytdl(&arg) {
                 resolved_tracks.extend(
                     ytdlp::resolve_collection(&arg)
                         .with_context(|| format!("resolving yt-dlp collection: {arg}"))?,
                 );
             } else {
-                url_tracks.push(arg);
+                let kind = classify_remote_input(&arg)
+                    .with_context(|| format!("sniffing remote input: {arg}"))?;
+                match kind {
+                    RemoteInputKind::Feed => resolved_tracks.extend(
+                        resolve_feed(&arg).with_context(|| format!("resolving feed: {arg}"))?,
+                    ),
+                    RemoteInputKind::M3u => resolved_tracks.extend(
+                        resolve_m3u(&arg).with_context(|| format!("resolving m3u: {arg}"))?,
+                    ),
+                    RemoteInputKind::Pls => resolved_tracks.extend(
+                        resolve_pls(&arg).with_context(|| format!("resolving pls: {arg}"))?,
+                    ),
+                    RemoteInputKind::Other => url_tracks.push(arg),
+                }
             }
             continue;
         }
@@ -245,6 +259,60 @@ fn parse_cli_args(args: Vec<String>) -> Result<(CliAction, CliOverrides, Vec<Str
     }
 
     Ok((CliAction::Run, overrides, positional))
+}
+
+fn classify_remote_input(url: &str) -> Result<RemoteInputKind> {
+    if is_feed(url) {
+        return Ok(RemoteInputKind::Feed);
+    }
+    if is_m3u(url) {
+        return Ok(RemoteInputKind::M3u);
+    }
+    if is_pls(url) {
+        return Ok(RemoteInputKind::Pls);
+    }
+
+    sniff_remote_input_kind(url)
+}
+
+fn sniff_remote_input_kind(url: &str) -> Result<RemoteInputKind> {
+    let response = ureq::get(url)
+        .timeout(Duration::from_secs(10))
+        .set("Range", "bytes=0-4095")
+        .call()
+        .map_err(|err| anyhow!("remote probe request failed: {err}"))?;
+
+    if let Some(content_type) = response.header("Content-Type") {
+        let ct = content_type.to_ascii_lowercase();
+        if ct.contains("mpegurl") || ct.contains("x-mpegurl") {
+            return Ok(RemoteInputKind::M3u);
+        }
+        if ct.contains("scpls") || ct.contains("x-scpls") {
+            return Ok(RemoteInputKind::Pls);
+        }
+        if ct.contains("xml") || ct.contains("rss") || ct.contains("atom") {
+            return Ok(RemoteInputKind::Feed);
+        }
+    }
+
+    let mut limited = response.into_reader().take(4096);
+    let mut head = String::new();
+    limited
+        .read_to_string(&mut head)
+        .map_err(|err| anyhow!("failed reading remote probe body: {err}"))?;
+
+    let body = head.trim_start().to_ascii_lowercase();
+    if body.starts_with("#extm3u") || body.contains("#extinf:") {
+        return Ok(RemoteInputKind::M3u);
+    }
+    if body.contains("[playlist]") && body.contains("file1=") {
+        return Ok(RemoteInputKind::Pls);
+    }
+    if body.starts_with("<?xml") || body.contains("<rss") || body.contains("<feed") {
+        return Ok(RemoteInputKind::Feed);
+    }
+
+    Ok(RemoteInputKind::Other)
 }
 
 fn next_arg(args: &[String], index: &mut usize, flag: &str) -> Result<String> {
