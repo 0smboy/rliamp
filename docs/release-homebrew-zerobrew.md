@@ -14,11 +14,11 @@ git push origin main --tags
 
 ## 2) Publish source archive and checksum
 
-After creating the GitHub release, compute the tarball checksum:
+After pushing tag `vX.Y.Z`, compute the tag tarball checksum:
 
 ```bash
 curl -L -o /tmp/rliamp-vX.Y.Z-src.tar.gz \
-  https://github.com/0smboy/rliamp/releases/download/vX.Y.Z/rliamp-vX.Y.Z-src.tar.gz
+  https://github.com/0smboy/rliamp/archive/refs/tags/vX.Y.Z.tar.gz
 shasum -a 256 /tmp/rliamp-vX.Y.Z-src.tar.gz
 ```
 
@@ -26,7 +26,7 @@ shasum -a 256 /tmp/rliamp-vX.Y.Z-src.tar.gz
 
 Edit `Formula/rliamp.rb`:
 
-- `url` -> `.../vX.Y.Z/rliamp-vX.Y.Z-src.tar.gz`
+- `url` -> `https://github.com/0smboy/rliamp/archive/refs/tags/vX.Y.Z.tar.gz`
 - `sha256` -> checksum from step 2
 
 Then commit and push:
@@ -66,5 +66,5 @@ cmp ./target-user/release/rliamp /opt/zerobrew/bin/rliamp
 If `cmp` reports differences:
 
 1. Confirm `Formula/rliamp.rb` points to the latest release tarball.
-2. Confirm the release tarball was re-uploaded after tag creation (if re-uploaded, checksum must be refreshed).
+2. Confirm the formula URL tag matches the intended release tag.
 3. Run `zb update` and reinstall again to bypass stale formula cache.
