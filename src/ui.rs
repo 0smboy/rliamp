@@ -1662,14 +1662,9 @@ impl App {
             String::new(),
         ];
         lines.extend(self.render_spectrum());
-        lines.extend([
-            self.render_seek_bar(),
-            String::new(),
-            self.render_volume(),
-            self.render_eq(),
-            String::new(),
-            self.render_playlist_header(),
-        ]);
+        lines.extend([self.render_seek_bar(), String::new()]);
+        lines.extend(self.render_controls());
+        lines.extend([String::new(), self.render_playlist_header()]);
 
         lines.extend(self.render_playlist());
         lines.push(String::new());
@@ -2005,7 +2000,7 @@ impl App {
         let vol = self.player.volume();
         let frac = ((vol + 30.0) / 36.0).clamp(0.0, 1.0);
 
-        let bar_w: usize = 30;
+        let bar_w: usize = 20;
         let filled = (frac * bar_w as f32) as usize;
         let mut line = format!(
             "{} {}{} {:+.1}{}",
@@ -2019,6 +2014,37 @@ impl App {
             line.push_str(self.tr(" [Mono]", " [单声道]"));
         }
         line
+    }
+
+    fn render_controls(&self) -> Vec<String> {
+        let left = self.render_volume();
+        let right = self.render_output_info();
+        let gap = PANEL_WIDTH
+            .saturating_sub(display_width(&left))
+            .saturating_sub(display_width(&right))
+            .max(2);
+        let line1 = format!("{left}{}{}", " ".repeat(gap), right);
+        let line2 = self.render_eq();
+        vec![line1, line2]
+    }
+
+    fn render_output_info(&self) -> String {
+        let sr = self.player.output_sample_rate();
+        let sr_label = if sr >= 1000.0 {
+            let khz = sr / 1000.0;
+            if (khz - khz.round()).abs() < 0.05 {
+                format!("{:.0}kHz", khz.round())
+            } else {
+                format!("{khz:.1}kHz")
+            }
+        } else {
+            format!("{:.0}Hz", sr.round())
+        };
+        if self.lang == UiLang::Zh {
+            format!("输出 {sr_label}")
+        } else {
+            format!("OUT {sr_label}")
+        }
     }
 
     fn render_eq(&self) -> String {
