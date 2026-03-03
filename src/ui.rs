@@ -30,6 +30,9 @@ const ANSI_YELLOW: &str = "\x1b[93m";
 const ANSI_YELLOW_BOLD: &str = "\x1b[1;93m";
 const ANSI_MAGENTA: &str = "\x1b[95m";
 const ANSI_RED: &str = "\x1b[91m";
+const ANSI_RETRO_GRID: &str = "\x1b[38;5;108m";
+const ANSI_RETRO_SUN: &str = "\x1b[38;5;222m";
+const ANSI_RETRO_WAVE: &str = "\x1b[38;5;203m";
 
 const DEFAULT_VIS_ROWS: usize = 4;
 const EXPANDED_VIS_ROWS: usize = 20;
@@ -2551,6 +2554,10 @@ impl App {
     }
 
     fn colorize_spectrum_line(&self, content: &str) -> String {
+        if self.vis.is_retro() {
+            return self.colorize_retro_spectrum_line(content);
+        }
+
         let theme = self.current_theme();
 
         let mut out = String::new();
@@ -2569,6 +2576,34 @@ impl App {
                 '✦' | '•' | '·' | '.' => {
                     out.push_str(&paint(theme.spectrum_spark, &ch.to_string()))
                 }
+                ' ' => out.push(' '),
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+
+    fn colorize_retro_spectrum_line(&self, content: &str) -> String {
+        let mut out = String::new();
+        for ch in content.chars() {
+            match ch {
+                '•' => out.push_str(&paint(ANSI_RETRO_WAVE, &ch.to_string())),
+                '·' => out.push_str(&paint(ANSI_RETRO_SUN, &ch.to_string())),
+                '\u{2800}'..='\u{28FF}'
+                | '▁'
+                | '▂'
+                | '▃'
+                | '▄'
+                | '▅'
+                | '▆'
+                | '▇'
+                | '█'
+                | '▉'
+                | '▊'
+                | '▓'
+                | '▒'
+                | '░'
+                | '.' => out.push_str(&paint(ANSI_RETRO_GRID, &ch.to_string())),
                 ' ' => out.push(' '),
                 _ => out.push(ch),
             }

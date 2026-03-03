@@ -87,6 +87,10 @@ impl Visualizer {
         matches!(self.mode, VisualizerMode::None)
     }
 
+    pub fn is_retro(&self) -> bool {
+        matches!(self.mode, VisualizerMode::Retro)
+    }
+
     pub fn analyze(&mut self, samples: &[f32]) -> [f32; NUM_BANDS] {
         let mut bands = [0.0; NUM_BANDS];
         if matches!(self.mode, VisualizerMode::None) {
@@ -410,86 +414,161 @@ impl Visualizer {
     }
 
     fn render_retro(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
+        const CHAR_COLS: usize = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
         let rows = self.rows.max(4);
-        let width = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
-        let horizon = (rows / 2).clamp(1, rows.saturating_sub(2));
-        let center = width / 2;
-        let mut canvas = vec![vec![' '; width]; rows];
+        let dot_rows = rows * 4;
+        let dot_cols = CHAR_COLS * 2;
 
-        // Upper-half "sun" using block shades, striped to mimic synthwave style.
-        let radius = (horizon as f32 * 0.95).max(2.0);
-        for y in 0..=horizon {
-            let dy = horizon as f32 - y as f32;
-            let span = ((radius * radius - dy * dy).max(0.0)).sqrt() as isize;
-            let left = (center as isize - span).max(0);
-            let right = (center as isize + span).min(width.saturating_sub(1) as isize);
-            if left > right {
+        let mut horizon_dot = dot_rows * 2 / 5;
+        if horizon_dot < 2 {
+            horizon_dot = 2;
+        }
+        let floor_rows = dot_rows.saturating_sub(horizon_dot);
+        let center_x = (dot_cols.saturating_sub(1)) as f32 * 0.5;
+
+        // 0=empty, 1=grid, 2=wave, 3=sun
+        let mut dots = vec![vec![0u8; dot_cols]; dot_rows];
+
+        // Sun (striped semicircle).
+        let sun_r = horizon_dot as f32 * 0.85;
+        for dy in 0..horizon_dot {
+            let row_dist = (horizon_dot - dy) as f32;
+            if row_dist > sun_r {
                 continue;
             }
-            for x in left..=right {
-                canvas[y][x as usize] = if y % 2 == 0 { '░' } else { '▒' };
-            }
-        }
+            let half_w = (sun_r * sun_r - row_dist * row_dist).sqrt();
 
-        // Interpolate a smooth wave from the ten FFT bands and place it above the horizon.
-        let mut columns = vec![0.0f32; width];
-        for x in 0..width {
-            let pos = x as f32 / (width.saturating_sub(1).max(1)) as f32 * (NUM_BANDS - 1) as f32;
-            let lo = pos.floor() as usize;
-            let hi = (lo + 1).min(NUM_BANDS - 1);
-            let t = pos - lo as f32;
-            columns[x] = bands[lo] * (1.0 - t) + bands[hi] * t;
-        }
-        for (x, level) in columns.iter().enumerate() {
-            let amp = *level * horizon.max(1) as f32;
-            let y = (horizon as f32 - amp).round().clamp(0.0, horizon as f32) as usize;
-            canvas[y][x] = '█';
-            if y + 1 <= horizon && canvas[y + 1][x] == ' ' {
-                canvas[y + 1][x] = '▄';
+            if row_dist < sun_r * 0.5 {
+                let stripe_w = ((sun_r * 0.15) as usize).max(1);
+                if (row_dist as usize / stripe_w) % 2 == 1 {
+                    continue;
+                }
+            }
+
+            let left = (center_x - half_w).floor().max(0.0) as usize;
+            let right = (center_x + half_w)
+                .ceil()
+                .min(dot_cols.saturating_sub(1) as f32) as usize;
+            for dx in left..=right {
+                dots[dy][dx] = 3;
             }
         }
 
         // Horizon line.
-        for x in 0..width {
-            if canvas[horizon][x] == ' ' {
-                canvas[horizon][x] = '▁';
+        for dx in 0..dot_cols {
+            dots[horizon_dot][dx] = 1;
+        }
+
+        // Perspective floor vertical lines.
+        const NUM_V_LINES: usize = 18;
+        for i in 0..=NUM_V_LINES {
+            let bottom_x = i as f32 * (dot_cols.saturating_sub(1)) as f32 / NUM_V_LINES as f32;
+            for dy in (horizon_dot + 1)..dot_rows {
+                let t = (dy - horizon_dot) as f32 / floor_rows.saturating_sub(1).max(1) as f32;
+                let screen_x = center_x + (bottom_x - center_x) * t;
+                let ix = screen_x.round() as isize;
+                if ix >= 0 && (ix as usize) < dot_cols {
+                    dots[dy][ix as usize] = 1;
+                }
             }
         }
 
-        // Lower-half perspective grid.
-        let depth_rows = rows.saturating_sub(horizon + 1).max(1);
-        let lanes = 8usize;
-        for y in (horizon + 1)..rows {
-            let depth = (y - horizon) as f32 / depth_rows as f32;
+        // Perspective floor horizontal lines with scroll.
+        let scroll = (self.frame as f32 * 0.08) % 1.0;
+        const NUM_H_LINES: usize = 10;
+        for i in 0..NUM_H_LINES {
+            let mut z = (i as f32 + scroll) / NUM_H_LINES as f32;
+            if z > 1.0 {
+                z -= 1.0;
+            }
+            let dy =
+                horizon_dot + 1 + (z * z * floor_rows.saturating_sub(2).max(1) as f32) as usize;
+            if dy > horizon_dot && dy < dot_rows {
+                for dx in 0..dot_cols {
+                    dots[dy][dx] = 1;
+                }
+            }
+        }
 
-            if (y - horizon) % 2 == 0 {
-                for x in 0..width {
-                    if canvas[y][x] == ' ' {
-                        canvas[y][x] = '▒';
+        // Audio wave near horizon.
+        let mut wave_y = vec![0usize; dot_cols];
+        let max_wave = horizon_dot as f32 * 0.85;
+        for dx in 0..dot_cols {
+            let band_f =
+                dx as f32 / dot_cols.saturating_sub(1).max(1) as f32 * (NUM_BANDS - 1) as f32;
+            let bi = band_f.floor() as usize;
+            let frac = band_f - bi as f32;
+            let t = (1.0 - (frac * std::f32::consts::PI).cos()) * 0.5;
+
+            let mut level = if bi >= NUM_BANDS - 1 {
+                bands[NUM_BANDS - 1]
+            } else {
+                bands[bi] * (1.0 - t) + bands[bi + 1] * t
+            };
+            level = level.max(0.03);
+
+            let wy = horizon_dot as isize - (level * max_wave) as isize;
+            wave_y[dx] = wy.clamp(0, dot_rows.saturating_sub(1) as isize) as usize;
+        }
+        for dx in 0..dot_cols {
+            let y = wave_y[dx];
+            dots[y][dx] = 2;
+            if dx > 0 {
+                let lo = y.min(wave_y[dx - 1]);
+                let hi = y.max(wave_y[dx - 1]);
+                for fy in lo..=hi {
+                    dots[fy][dx] = 2;
+                }
+            }
+        }
+
+        // Render braille cells. Use wave/sun marker glyphs so UI colorizer can apply
+        // fixed retro colors with correct priority.
+        let mut lines = vec![String::new(); rows];
+        for row in 0..rows {
+            let mut line = String::with_capacity(CHAR_COLS);
+            let base = row * 4;
+            for ch in 0..CHAR_COLS {
+                let col_base = ch * 2;
+                let mut cell = 0x2800u32;
+                let mut has_wave = false;
+                let mut has_sun = false;
+
+                for dr in 0..4 {
+                    for dc in 0..2 {
+                        let dy = base + dr;
+                        let dx = col_base + dc;
+                        if dy >= dot_rows || dx >= dot_cols {
+                            continue;
+                        }
+                        match dots[dy][dx] {
+                            1 => cell |= BRAILLE_BITS[dr][dc],
+                            2 => {
+                                cell |= BRAILLE_BITS[dr][dc];
+                                has_wave = true;
+                            }
+                            3 => {
+                                cell |= BRAILLE_BITS[dr][dc];
+                                has_sun = true;
+                            }
+                            _ => {}
+                        }
                     }
                 }
-            }
 
-            let spread = width as f32 * 0.92 * depth;
-            for lane in 0..=lanes {
-                let t = lane as f32 / lanes as f32;
-                let x = (center as f32 + (t - 0.5) * spread).round() as isize;
-                if x < 0 || x >= width as isize {
-                    continue;
-                }
-                let cell = &mut canvas[y][x as usize];
-                *cell = match *cell {
-                    '▒' => '▓',
-                    ' ' => '░',
-                    current => current,
+                let glyph = if has_wave {
+                    '•'
+                } else if has_sun {
+                    '·'
+                } else {
+                    char::from_u32(cell).unwrap_or(' ')
                 };
+                line.push(glyph);
             }
+            lines[row] = line;
         }
 
-        canvas
-            .into_iter()
-            .map(|row| row.into_iter().collect::<String>())
-            .collect()
+        lines
     }
 }
 
