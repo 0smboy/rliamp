@@ -144,6 +144,9 @@ cargo build --release
 
 Note: this project uses `target-user/` as Cargo target directory (`.cargo/config.toml`).
 
+Release publish checklist (Homebrew + ZeroBrew):
+- `docs/release-homebrew-zerobrew.md`
+
 ## Configuration
 
 ```bash
