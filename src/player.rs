@@ -3,12 +3,12 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, StreamConfig};
 use std::array;
 use std::fs::File;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::errors::Error as SymphoniaError;
@@ -25,6 +25,10 @@ pub const EQ_FREQS: [f32; 10] = [
 pub const SUPPORTED_EXTS: &[&str] = &[
     ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".m4b", ".m4p", ".alac", ".wma", ".opus",
 ];
+
+const FFMPEG_DECODE_TIMEOUT: Duration = Duration::from_secs(180);
+const FFMPEG_MAX_PCM_BYTES: usize = 512 * 1024 * 1024;
+const FFMPEG_MAX_STDERR_BYTES: usize = 256 * 1024;
 
 pub struct Player {
     state: Arc<Mutex<PlaybackState>>,
@@ -676,7 +680,7 @@ fn downmix_to_stereo(frame: &[f32]) -> (f32, f32) {
 }
 
 fn decode_audio_ffmpeg(path: &str) -> Result<DecodedTrack> {
-    let output = Command::new("ffmpeg")
+    let mut child = Command::new("ffmpeg")
         .args([
             "-v",
             "error",
@@ -693,20 +697,47 @@ fn decode_audio_ffmpeg(path: &str) -> Result<DecodedTrack> {
             "44100",
             "-",
         ])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .with_context(|| format!("failed to invoke ffmpeg for: {path}"))?;
 
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture ffmpeg stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture ffmpeg stderr"))?;
+
+    let stdout_reader =
+        thread::spawn(move || read_to_end_limited(stdout, FFMPEG_MAX_PCM_BYTES, "ffmpeg stdout"));
+    let stderr_reader = thread::spawn(move || {
+        read_to_end_limited(stderr, FFMPEG_MAX_STDERR_BYTES, "ffmpeg stderr")
+    });
+
+    let status = wait_child_with_timeout(&mut child, FFMPEG_DECODE_TIMEOUT)
+        .with_context(|| format!("ffmpeg decode timeout for: {path}"))?;
+
+    let stdout_bytes = stdout_reader
+        .join()
+        .map_err(|_| anyhow!("ffmpeg stdout reader thread panicked"))??;
+    let stderr_bytes = stderr_reader
+        .join()
+        .map_err(|_| anyhow!("ffmpeg stderr reader thread panicked"))??;
+
+    if !status.success() {
+        let err = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
         return Err(anyhow!("ffmpeg decode failed: {err}"));
     }
 
-    if output.stdout.is_empty() {
+    if stdout_bytes.is_empty() {
         return Err(anyhow!("ffmpeg decode produced no samples: {path}"));
     }
 
-    let mut samples = Vec::<f32>::with_capacity(output.stdout.len() / 4);
-    for chunk in output.stdout.chunks_exact(4) {
+    let mut samples = Vec::<f32>::with_capacity(stdout_bytes.len() / 4);
+    for chunk in stdout_bytes.chunks_exact(4) {
         samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
 
@@ -725,6 +756,45 @@ fn decode_audio_ffmpeg(path: &str) -> Result<DecodedTrack> {
         frames,
         sample_rate: 44100.0,
     })
+}
+
+fn wait_child_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| anyhow!("failed waiting ffmpeg process: {err}"))?
+        {
+            return Ok(status);
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!("ffmpeg process exceeded timeout of {:?}", timeout));
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn read_to_end_limited<R: Read>(mut reader: R, limit: usize, label: &str) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|err| anyhow!("read error on {label}: {err}"))?;
+        if n == 0 {
+            break;
+        }
+        if buf.len().saturating_add(n) > limit {
+            return Err(anyhow!("{label} exceeded limit of {limit} bytes"));
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    Ok(buf)
 }
 
 fn prefers_ffmpeg_decode(path: &str) -> bool {

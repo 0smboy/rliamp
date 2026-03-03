@@ -374,13 +374,13 @@ fn parse_m3u_tracks(body: &str, base_dir: Option<&Path>) -> Vec<Track> {
         let mut track = if is_url(line) {
             Track::from_path(line.to_string())
         } else {
-            let p = Path::new(line);
-            let resolved = if p.is_absolute() {
-                p.to_path_buf()
-            } else if let Some(base) = base_dir {
-                base.join(p)
-            } else {
-                p.to_path_buf()
+            // Remote M3U entries should never resolve to local filesystem paths.
+            if base_dir.is_none() {
+                continue;
+            }
+
+            let Some(resolved) = resolve_local_playlist_path(base_dir, line) else {
+                continue;
             };
             Track::from_path(resolved.to_string_lossy().to_string())
         };
@@ -469,13 +469,13 @@ fn parse_pls_tracks(body: &str, base_dir: Option<&Path>) -> Result<Vec<Track>> {
         let mut track = if is_url(&raw_path) {
             Track::from_path(raw_path)
         } else {
-            let p = Path::new(raw_path.as_str());
-            let resolved = if p.is_absolute() {
-                p.to_path_buf()
-            } else if let Some(base) = base_dir {
-                base.join(p)
-            } else {
-                p.to_path_buf()
+            // Remote PLS entries should never resolve to local filesystem paths.
+            if base_dir.is_none() {
+                continue;
+            }
+
+            let Some(resolved) = resolve_local_playlist_path(base_dir, raw_path.as_str()) else {
+                continue;
             };
             Track::from_path(resolved.to_string_lossy().to_string())
         };
@@ -505,6 +505,43 @@ fn strip_mirror_suffix(s: &str) -> &str {
         }
     }
     s
+}
+
+fn resolve_local_playlist_path(base_dir: Option<&Path>, raw: &str) -> Option<PathBuf> {
+    if raw.is_empty() || raw.contains('\0') {
+        return None;
+    }
+
+    let p = Path::new(raw);
+    if p.is_absolute() {
+        return Some(p.to_path_buf());
+    }
+
+    let Some(base) = base_dir else {
+        return Some(p.to_path_buf());
+    };
+    let normalized_base = normalize_path_lexical(base);
+    let normalized_target = normalize_path_lexical(base.join(p));
+
+    if !normalized_target.starts_with(&normalized_base) {
+        return None;
+    }
+    Some(normalized_target)
+}
+
+fn normalize_path_lexical(path: impl AsRef<Path>) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.as_ref().components() {
+        use std::path::Component;
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 fn resolve_feed(url: &str) -> Result<Vec<Track>> {
