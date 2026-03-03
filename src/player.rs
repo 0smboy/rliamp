@@ -30,6 +30,8 @@ const FFMPEG_DECODE_TIMEOUT: Duration = Duration::from_secs(180);
 const FFMPEG_MAX_PCM_BYTES: usize = 512 * 1024 * 1024;
 const FFMPEG_MAX_STDERR_BYTES: usize = 256 * 1024;
 const STREAM_CHUNK_SECONDS: u32 = 150;
+const STREAM_RETRY_ATTEMPTS: usize = 3;
+const STREAM_MIN_FRAMES: usize = 44_100 * 3;
 
 pub struct Player {
     state: Arc<Mutex<PlaybackState>>,
@@ -681,7 +683,24 @@ fn downmix_to_stereo(frame: &[f32]) -> (f32, f32) {
 }
 
 fn decode_stream_chunk_ffmpeg(path: &str) -> Result<DecodedTrack> {
-    decode_audio_ffmpeg_inner(path, Some(STREAM_CHUNK_SECONDS), true)
+    let mut last_err: Option<anyhow::Error> = None;
+    for _ in 0..STREAM_RETRY_ATTEMPTS {
+        match decode_audio_ffmpeg_inner(path, Some(STREAM_CHUNK_SECONDS), true) {
+            Ok(track) if track.frames >= STREAM_MIN_FRAMES => return Ok(track),
+            Ok(track) => {
+                last_err = Some(anyhow!(
+                    "ffmpeg stream chunk too short: {} frames",
+                    track.frames
+                ));
+            }
+            Err(err) => {
+                last_err = Some(err);
+            }
+        }
+        thread::sleep(Duration::from_millis(350));
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow!("ffmpeg stream chunk decode failed")))
 }
 
 fn decode_audio_ffmpeg(path: &str) -> Result<DecodedTrack> {
@@ -705,8 +724,8 @@ fn decode_audio_ffmpeg_inner(
             "-rw_timeout".into(),
             "15000000".into(),
         ]);
-        if stream_looks_like_aac(path) {
-            ffmpeg_args.extend(["-f".into(), "aac".into()]);
+        if let Some(fmt) = detect_stream_input_format(path) {
+            ffmpeg_args.extend(["-f".into(), fmt.into()]);
         }
     }
 
@@ -748,7 +767,8 @@ fn decode_audio_ffmpeg_inner(
         read_to_end_limited(stderr, FFMPEG_MAX_STDERR_BYTES, "ffmpeg stderr")
     });
 
-    let status = wait_child_with_timeout(&mut child, FFMPEG_DECODE_TIMEOUT)
+    let timeout = ffmpeg_decode_timeout(max_seconds, stream_mode);
+    let status = wait_child_with_timeout(&mut child, timeout)
         .with_context(|| format!("ffmpeg decode timeout for: {path}"))?;
 
     let stdout_bytes = stdout_reader
@@ -760,7 +780,9 @@ fn decode_audio_ffmpeg_inner(
 
     if !status.success() {
         let err = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
-        return Err(anyhow!("ffmpeg decode failed: {err}"));
+        if !stream_mode {
+            return Err(anyhow!("ffmpeg decode failed: {err}"));
+        }
     }
 
     if stdout_bytes.is_empty() {
@@ -789,15 +811,69 @@ fn decode_audio_ffmpeg_inner(
     })
 }
 
-fn stream_looks_like_aac(url: &str) -> bool {
-    let Ok(resp) = ureq::head(url).timeout(Duration::from_secs(8)).call() else {
-        return false;
-    };
-    let Some(content_type) = resp.header("Content-Type") else {
-        return false;
-    };
-    let ct = content_type.to_ascii_lowercase();
-    ct.contains("aac") || ct.contains("aacp")
+fn ffmpeg_decode_timeout(max_seconds: Option<u32>, stream_mode: bool) -> Duration {
+    if !stream_mode {
+        return FFMPEG_DECODE_TIMEOUT;
+    }
+    let chunk_seconds = max_seconds.unwrap_or(STREAM_CHUNK_SECONDS) as u64;
+    Duration::from_secs((chunk_seconds + 180).max(FFMPEG_DECODE_TIMEOUT.as_secs()))
+}
+
+fn detect_stream_input_format(url: &str) -> Option<&'static str> {
+    let url_lower = url.to_ascii_lowercase();
+    if url_lower.contains(".aac") || url_lower.contains("aacp") {
+        return Some("aac");
+    }
+    if url_lower.contains(".mp3") {
+        return Some("mp3");
+    }
+    if url_lower.contains(".ogg") || url_lower.contains(".opus") {
+        return Some("ogg");
+    }
+
+    let mut content_type = head_content_type(url);
+    if content_type.is_none() {
+        content_type = probe_content_type(url);
+    }
+    let ct = content_type?.to_ascii_lowercase();
+
+    if ct.contains("aac") || ct.contains("aacp") {
+        return Some("aac");
+    }
+    if ct.contains("mpeg") || ct.contains("mp3") {
+        return Some("mp3");
+    }
+    if ct.contains("ogg") || ct.contains("opus") {
+        return Some("ogg");
+    }
+    if ct.contains("flac") {
+        return Some("flac");
+    }
+    if ct.contains("wav") {
+        return Some("wav");
+    }
+    if ct.contains("mp4") || ct.contains("m4a") {
+        return Some("mp4");
+    }
+
+    None
+}
+
+fn head_content_type(url: &str) -> Option<String> {
+    let resp = ureq::head(url)
+        .timeout(Duration::from_secs(8))
+        .call()
+        .ok()?;
+    resp.header("Content-Type").map(str::to_string)
+}
+
+fn probe_content_type(url: &str) -> Option<String> {
+    let resp = ureq::get(url)
+        .timeout(Duration::from_secs(8))
+        .set("Range", "bytes=0-0")
+        .call()
+        .ok()?;
+    resp.header("Content-Type").map(str::to_string)
 }
 
 fn wait_child_with_timeout(
