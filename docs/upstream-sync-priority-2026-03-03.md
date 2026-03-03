@@ -58,7 +58,7 @@
   - provider works from config file without env vars
   - empty/error provider states are recoverable in UI
 
-3. [ ] Legacy metadata decoding robustness (`ff71b42`)
+3. [x] Legacy metadata decoding robustness (`ff71b42`) — completed in `5280618`
 - Why: improves display correctness for non-Latin tags.
 - Land in this repo:
   - `src/playlist.rs` (and metadata extraction paths): add charset fallback decode.
