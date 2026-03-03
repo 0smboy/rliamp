@@ -1373,6 +1373,12 @@ impl App {
                 self.play_track(track, idx);
             }
         } else {
+            if let Some((track, idx)) = self.playlist.current() {
+                if track.stream {
+                    self.play_track(track, idx);
+                    return;
+                }
+            }
             self.player.stop();
         }
     }

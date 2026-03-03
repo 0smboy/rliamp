@@ -29,6 +29,7 @@ pub const SUPPORTED_EXTS: &[&str] = &[
 const FFMPEG_DECODE_TIMEOUT: Duration = Duration::from_secs(180);
 const FFMPEG_MAX_PCM_BYTES: usize = 512 * 1024 * 1024;
 const FFMPEG_MAX_STDERR_BYTES: usize = 256 * 1024;
+const STREAM_CHUNK_SECONDS: u32 = 150;
 
 pub struct Player {
     state: Arc<Mutex<PlaybackState>>,
@@ -542,7 +543,7 @@ impl DecodedTrack {
 
 fn decode_audio(path: &str) -> Result<DecodedTrack> {
     if is_url(path) {
-        return decode_audio_ffmpeg(path);
+        return decode_stream_chunk_ffmpeg(path);
     }
 
     if prefers_ffmpeg_decode(path) {
@@ -679,24 +680,54 @@ fn downmix_to_stereo(frame: &[f32]) -> (f32, f32) {
     }
 }
 
+fn decode_stream_chunk_ffmpeg(path: &str) -> Result<DecodedTrack> {
+    decode_audio_ffmpeg_inner(path, Some(STREAM_CHUNK_SECONDS), true)
+}
+
 fn decode_audio_ffmpeg(path: &str) -> Result<DecodedTrack> {
+    decode_audio_ffmpeg_inner(path, None, false)
+}
+
+fn decode_audio_ffmpeg_inner(
+    path: &str,
+    max_seconds: Option<u32>,
+    stream_mode: bool,
+) -> Result<DecodedTrack> {
+    let mut ffmpeg_args: Vec<String> = vec!["-v".into(), "error".into()];
+    if stream_mode {
+        ffmpeg_args.extend([
+            "-reconnect".into(),
+            "1".into(),
+            "-reconnect_streamed".into(),
+            "1".into(),
+            "-reconnect_delay_max".into(),
+            "2".into(),
+            "-rw_timeout".into(),
+            "15000000".into(),
+        ]);
+        if stream_looks_like_aac(path) {
+            ffmpeg_args.extend(["-f".into(), "aac".into()]);
+        }
+    }
+
+    ffmpeg_args.extend(["-i".into(), path.to_string(), "-vn".into()]);
+    if let Some(seconds) = max_seconds {
+        ffmpeg_args.extend(["-t".into(), seconds.to_string()]);
+    }
+    ffmpeg_args.extend([
+        "-f".into(),
+        "f32le".into(),
+        "-acodec".into(),
+        "pcm_f32le".into(),
+        "-ac".into(),
+        "2".into(),
+        "-ar".into(),
+        "44100".into(),
+        "-".into(),
+    ]);
+
     let mut child = Command::new("ffmpeg")
-        .args([
-            "-v",
-            "error",
-            "-i",
-            path,
-            "-vn",
-            "-f",
-            "f32le",
-            "-acodec",
-            "pcm_f32le",
-            "-ac",
-            "2",
-            "-ar",
-            "44100",
-            "-",
-        ])
+        .args(&ffmpeg_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -756,6 +787,17 @@ fn decode_audio_ffmpeg(path: &str) -> Result<DecodedTrack> {
         frames,
         sample_rate: 44100.0,
     })
+}
+
+fn stream_looks_like_aac(url: &str) -> bool {
+    let Ok(resp) = ureq::head(url).timeout(Duration::from_secs(8)).call() else {
+        return false;
+    };
+    let Some(content_type) = resp.header("Content-Type") else {
+        return false;
+    };
+    let ct = content_type.to_ascii_lowercase();
+    ct.contains("aac") || ct.contains("aacp")
 }
 
 fn wait_child_with_timeout(
