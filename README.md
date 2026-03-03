@@ -31,6 +31,9 @@ This branch is synced with key upstream updates through **2026-03-01** (feature 
 - ffmpeg fallback decode when Symphonia fails (including unsupported WAV variants)
 - Navidrome provider integration (`NAVIDROME_URL` / `NAVIDROME_USER` / `NAVIDROME_PASS`)
 
+Pending upstream sync priorities (as of **2026-03-03**, upstream `v1.12.3`~`v1.13.1`):
+- see `docs/upstream-sync-priority-2026-03-03.md`
+
 ## Features
 
 - Local playback: `mp3`, `wav`, `flac`, `ogg`, `m4a`, `aac`, `m4b`, `m4p`, `alac`, `wma`, `opus`.
