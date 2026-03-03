@@ -2,6 +2,14 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Default)]
+pub struct NavidromeConfig {
+    pub url: Option<String>,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    pub token: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub volume: f32,
@@ -11,6 +19,7 @@ pub struct Config {
     pub repeat: String,
     pub shuffle: bool,
     pub mono: bool,
+    pub navidrome: NavidromeConfig,
 }
 
 impl Default for Config {
@@ -23,6 +32,7 @@ impl Default for Config {
             repeat: "off".to_string(),
             shuffle: false,
             mono: false,
+            navidrome: NavidromeConfig::default(),
         }
     }
 }
@@ -36,9 +46,15 @@ impl Config {
             return Ok(cfg);
         };
 
+        let mut section = String::new();
         for raw in content.lines() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            if line.starts_with('[') && line.ends_with(']') {
+                section = line[1..line.len() - 1].trim().to_ascii_lowercase();
                 continue;
             }
 
@@ -48,29 +64,38 @@ impl Config {
             let key = key.trim();
             let value = value.trim();
 
-            match key {
-                "volume" => {
-                    if let Ok(v) = value.parse::<f32>() {
-                        cfg.volume = v.clamp(-30.0, 6.0);
+            match section.as_str() {
+                "navidrome" => match key {
+                    "url" => cfg.navidrome.url = parse_optional_string(value),
+                    "user" | "username" => cfg.navidrome.user = parse_optional_string(value),
+                    "password" | "pass" => cfg.navidrome.password = parse_optional_string(value),
+                    "token" => cfg.navidrome.token = parse_optional_string(value),
+                    _ => {}
+                },
+                _ => match key {
+                    "volume" => {
+                        if let Ok(v) = value.parse::<f32>() {
+                            cfg.volume = v.clamp(-30.0, 6.0);
+                        }
                     }
-                }
-                "repeat" => {
-                    let v = trim_quotes(value).to_ascii_lowercase();
-                    if matches!(v.as_str(), "off" | "all" | "one") {
-                        cfg.repeat = v;
+                    "repeat" => {
+                        let v = trim_quotes(value).to_ascii_lowercase();
+                        if matches!(v.as_str(), "off" | "all" | "one") {
+                            cfg.repeat = v;
+                        }
                     }
-                }
-                "shuffle" => cfg.shuffle = value.eq_ignore_ascii_case("true"),
-                "mono" => cfg.mono = value.eq_ignore_ascii_case("true"),
-                "eq_preset" => cfg.eq_preset = trim_quotes(value).to_string(),
-                "theme" => {
-                    let v = trim_quotes(value).trim();
-                    if !v.is_empty() {
-                        cfg.theme = Some(v.to_string());
+                    "shuffle" => cfg.shuffle = value.eq_ignore_ascii_case("true"),
+                    "mono" => cfg.mono = value.eq_ignore_ascii_case("true"),
+                    "eq_preset" => cfg.eq_preset = trim_quotes(value).to_string(),
+                    "theme" => {
+                        let v = trim_quotes(value).trim();
+                        if !v.is_empty() {
+                            cfg.theme = Some(v.to_string());
+                        }
                     }
-                }
-                "eq" => cfg.eq = parse_eq(value),
-                _ => {}
+                    "eq" => cfg.eq = parse_eq(value),
+                    _ => {}
+                },
             }
         }
 
@@ -89,6 +114,15 @@ fn config_path() -> io::Result<PathBuf> {
 
 fn trim_quotes(s: &str) -> &str {
     s.trim_matches('"').trim_matches('\'')
+}
+
+fn parse_optional_string(value: &str) -> Option<String> {
+    let v = trim_quotes(value).trim();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v.to_string())
+    }
 }
 
 fn parse_eq(value: &str) -> [f32; 10] {

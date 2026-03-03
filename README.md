@@ -17,7 +17,7 @@ This branch is synced with key upstream updates through **2026-03-01** (feature 
 - local playlist file expansion for `.m3u`, `.m3u8`, `.pls`
 - gapless playback with automatic next-track preload
 - yt-dlp input support (SoundCloud / YouTube / Bandcamp)
-- visualizer mode toggle (`Neon` / `Bricks` / `Columns` / `Wave` / `Scatter` / `Flame`)
+- visualizer mode toggle (`Neon` / `Bricks` / `Columns` / `Wave` / `Scatter` / `Flame` / `Off`)
 - full-screen visualizer mode (`V`)
 - interactive keymap (`Ctrl+K`, supports up/down navigation)
 - theme picker (`t`)
@@ -29,7 +29,7 @@ This branch is synced with key upstream updates through **2026-03-01** (feature 
 - provider playlist load now replaces current queue before autoplay
 - CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--eq-preset`, `--auto-play`
 - ffmpeg fallback decode when Symphonia fails (including unsupported WAV variants)
-- Navidrome provider integration (`NAVIDROME_URL` / `NAVIDROME_USER` / `NAVIDROME_PASS`)
+- Navidrome provider integration (`[navidrome]` config section + env fallback)
 
 Pending upstream sync priorities (as of **2026-03-03**, upstream `v1.12.3`~`v1.13.1`):
 - see `docs/upstream-sync-priority-2026-03-03.md`
@@ -41,7 +41,7 @@ Pending upstream sync priorities (as of **2026-03-03**, upstream `v1.12.3`~`v1.1
 - Local and remote M3U/PLS playlist expansion, plus podcast RSS feed support.
 - SoundCloud / YouTube / Bandcamp URL support via `yt-dlp`.
 - Gapless playback for local file queues (auto-preload next track).
-- Real-time 10-band spectrum visualization with six modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`).
+- Real-time 10-band spectrum visualization with seven modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`, `Off`).
 - Full-screen visualizer mode (`V`), plus interactive keymap/theme/info overlays.
 - Shortcut hints (content inside `[...]`) are theme-accent highlighted.
 - Queue manager (`A`) and playlist manager (`p`) overlays.
@@ -51,7 +51,7 @@ Pending upstream sync priorities (as of **2026-03-03**, upstream `v1.12.3`~`v1.1
 - Bilingual UI (`English` / `中文`) with runtime toggle.
 - Custom EQ quick modes (`1`-`6`) including `Engineer`.
 - Queue, search, shuffle, repeat, mono, seek, and volume controls.
-- Optional Navidrome playlist loading via environment variables.
+- Optional Navidrome playlist loading via config section or environment variables.
 - Unicode-style ANSI-colored terminal UI.
 
 ## Requirements
@@ -120,7 +120,15 @@ cargo run -- "https://soundcloud.com/user/sets/playlist"
 cargo run -- "https://www.youtube.com/watch?v=VIDEO_ID"
 cargo run -- "https://artist.bandcamp.com/album/album-name"
 
-# provider mode (no file arguments required)
+# provider mode from config file (recommended)
+# add this section to ~/.config/rliamp/config.toml:
+# [navidrome]
+# url = "https://navidrome.example.com"
+# user = "alice"
+# password = "secret"
+cargo run --
+
+# provider mode via env fallback
 NAVIDROME_URL="https://navidrome.example.com" \
 NAVIDROME_USER="alice" \
 NAVIDROME_PASS="secret" \
@@ -145,12 +153,25 @@ cp config.toml.example ~/.config/rliamp/config.toml
 
 ## Navidrome
 
-Set all three variables to enable provider mode:
+Configure provider mode with either `~/.config/rliamp/config.toml` or env vars.
+
+Config file (takes precedence):
+
+```bash
+[navidrome]
+url = "https://navidrome.example.com"
+user = "alice"
+password = "secret"
+# token = "optional-token"  # optional alternative to password
+```
+
+Environment fallback:
 
 ```bash
 export NAVIDROME_URL="https://navidrome.example.com"
 export NAVIDROME_USER="alice"
 export NAVIDROME_PASS="secret"
+# or: export NAVIDROME_TOKEN="token-value"
 ```
 
 Then run:
@@ -162,6 +183,7 @@ Then run:
 Inside provider mode:
 - `Up` / `Down`: move playlist selection
 - `Enter`: load selected remote playlist
+- `r`: reload playlists (retry after empty/error)
 - `Tab`: switch focus back to local playlist/EQ view (after tracks are loaded)
 
 ## Custom EQ Modes
@@ -192,7 +214,7 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `g` | Toggle matrix background |
 | `e` | Cycle EQ preset |
 | `t` | Choose theme |
-| `c` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame) |
+| `c` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame / Off) |
 | `V` | Toggle full-screen visualizer |
 | `1` `2` `3` `4` `5` `6` | Apply custom EQ mode |
 | `u` | Toggle UI language (EN / ZH) |

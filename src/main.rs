@@ -79,7 +79,8 @@ Examples:
   rliamp https://artist.bandcamp.com/album/...
 
 Environment:
-  NAVIDROME_URL, NAVIDROME_USER, NAVIDROME_PASS
+  NAVIDROME_URL, NAVIDROME_USER, NAVIDROME_PASS, NAVIDROME_TOKEN
+  (env fallback when [navidrome] is not set in ~/.config/rliamp/config.toml)
 
 Formats:
   mp3, wav, flac, ogg, m4a, aac, opus, wma
@@ -101,11 +102,14 @@ fn run() -> Result<()> {
         CliAction::Run => {}
     }
 
-    let provider = NavidromeClient::from_env().map(|p| Box::new(p) as Box<dyn Provider>);
+    let cfg = config::Config::load().unwrap_or_default();
+    let provider = NavidromeClient::from_config(&cfg.navidrome)
+        .or_else(NavidromeClient::from_env)
+        .map(|p| Box::new(p) as Box<dyn Provider>);
 
     if args.is_empty() && provider.is_none() {
         return Err(anyhow!(
-            "usage: rliamp <file|folder|url> [...] or configure a provider via ENV\n\nexamples:\n  rliamp song.mp3\n  rliamp ~/Music\n  rliamp ~/radio-stations.m3u\n  rliamp ~/radio-stations.pls\n  rliamp https://example.com/stream.m3u\n  rliamp https://soundcloud.com/user/sets/playlist\n\nprovider env (Navidrome):\n  NAVIDROME_URL NAVIDROME_USER NAVIDROME_PASS\n\noptional tools:\n  yt-dlp (for SoundCloud/YouTube/Bandcamp URLs)"
+            "usage: rliamp <file|folder|url> [...] or configure Navidrome via ~/.config/rliamp/config.toml [navidrome] (or env fallback)\n\nexamples:\n  rliamp song.mp3\n  rliamp ~/Music\n  rliamp ~/radio-stations.m3u\n  rliamp ~/radio-stations.pls\n  rliamp https://example.com/stream.m3u\n  rliamp https://soundcloud.com/user/sets/playlist\n\nprovider config section:\n  [navidrome]\n  url = \"https://navidrome.example.com\"\n  user = \"alice\"\n  password = \"secret\"\n\nprovider env fallback:\n  NAVIDROME_URL NAVIDROME_USER NAVIDROME_PASS (or NAVIDROME_TOKEN)\n\noptional tools:\n  yt-dlp (for SoundCloud/YouTube/Bandcamp URLs)"
         ));
     }
 
@@ -172,7 +176,6 @@ fn run() -> Result<()> {
         return Err(anyhow!("no playable files found"));
     }
 
-    let cfg = config::Config::load().unwrap_or_default();
     let volume = overrides.volume.unwrap_or(cfg.volume);
     let repeat = overrides.repeat.unwrap_or(cfg.repeat);
     let shuffle = overrides.shuffle.unwrap_or(cfg.shuffle);

@@ -1,3 +1,4 @@
+use crate::config::NavidromeConfig;
 use crate::playlist::Track;
 use crate::provider::{PlaylistInfo, Provider};
 use anyhow::{anyhow, Context, Result};
@@ -12,46 +13,100 @@ const NAVIDROME_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 pub struct NavidromeClient {
     base_url: String,
     user: String,
-    password: String,
+    auth: NavidromeAuth,
+}
+
+enum NavidromeAuth {
+    Password(String),
+    Token(String),
 }
 
 impl NavidromeClient {
+    pub fn from_config(cfg: &NavidromeConfig) -> Option<Self> {
+        Self::from_parts(
+            cfg.url.as_deref(),
+            cfg.user.as_deref(),
+            cfg.password.as_deref(),
+            cfg.token.as_deref(),
+        )
+    }
+
     pub fn from_env() -> Option<Self> {
-        let base_url = std::env::var("NAVIDROME_URL").ok()?;
-        let user = std::env::var("NAVIDROME_USER").ok()?;
-        let password = std::env::var("NAVIDROME_PASS").ok()?;
-        let base_url = base_url.trim_end_matches('/').trim();
-        if base_url.is_empty() || user.trim().is_empty() || password.trim().is_empty() {
+        Self::from_parts(
+            std::env::var("NAVIDROME_URL").ok().as_deref(),
+            std::env::var("NAVIDROME_USER").ok().as_deref(),
+            std::env::var("NAVIDROME_PASS").ok().as_deref(),
+            std::env::var("NAVIDROME_TOKEN").ok().as_deref(),
+        )
+    }
+
+    fn from_parts(
+        base_url: Option<&str>,
+        user: Option<&str>,
+        password: Option<&str>,
+        token: Option<&str>,
+    ) -> Option<Self> {
+        let base_url = base_url?.trim_end_matches('/').trim();
+        let user = user?.trim();
+        let password = password
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let token = token
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        if base_url.is_empty() || user.is_empty() {
             return None;
         }
         if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
             return None;
         }
+
+        let auth = if let Some(password) = password {
+            NavidromeAuth::Password(password)
+        } else if let Some(token) = token {
+            NavidromeAuth::Token(token)
+        } else {
+            return None;
+        };
+
         Some(Self {
             base_url: base_url.to_string(),
-            user,
-            password,
+            user: user.to_string(),
+            auth,
         })
     }
 
     fn auth_pairs(&self) -> Vec<(String, String)> {
-        let mut salt_bytes = [0u8; 8];
-        rand::thread_rng().fill_bytes(&mut salt_bytes);
-        let salt = salt_bytes
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        let digest = md5::compute(format!("{}{}", self.password, salt));
-        let token = format!("{digest:x}");
-
-        vec![
+        let mut pairs = vec![
             ("u".to_string(), self.user.clone()),
-            ("t".to_string(), token),
-            ("s".to_string(), salt),
             ("v".to_string(), "1.0.0".to_string()),
             ("c".to_string(), "rliamp".to_string()),
             ("f".to_string(), "json".to_string()),
-        ]
+        ];
+
+        match &self.auth {
+            NavidromeAuth::Password(password) => {
+                let mut salt_bytes = [0u8; 8];
+                rand::thread_rng().fill_bytes(&mut salt_bytes);
+                let salt = salt_bytes
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
+                let digest = md5::compute(format!("{password}{salt}"));
+                let token = format!("{digest:x}");
+
+                pairs.push(("t".to_string(), token));
+                pairs.push(("s".to_string(), salt));
+            }
+            NavidromeAuth::Token(token) => {
+                pairs.push(("p".to_string(), token.clone()));
+            }
+        }
+
+        pairs
     }
 
     fn build_url(&self, endpoint: &str, extra: &[(&str, &str)]) -> String {

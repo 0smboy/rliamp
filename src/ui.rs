@@ -775,6 +775,7 @@ impl App {
         let Some(provider) = self.provider.as_ref() else {
             return;
         };
+        self.error = None;
         self.prov_loading = true;
         match provider.playlists() {
             Ok(mut lists) => {
@@ -786,7 +787,6 @@ impl App {
                 self.error = None;
             }
             Err(err) => {
-                self.provider_lists.clear();
                 self.error = Some(err.to_string());
             }
         }
@@ -1242,6 +1242,7 @@ impl App {
                 }
             }
             KeyCode::Char('u') | KeyCode::Char('U') => self.toggle_language(),
+            KeyCode::Char('r') | KeyCode::Char('R') => self.reload_provider_playlists(),
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 self.show_themes = true;
                 self.theme_saved_idx = self.theme_idx;
@@ -2116,9 +2117,20 @@ impl App {
             }
 
             if self.provider_lists.is_empty() {
-                return vec![self
-                    .tr("  No playlists found.", "  未找到播放列表。")
-                    .to_string()];
+                if self.error.is_some() {
+                    return vec![
+                        self.tr("  Failed to load playlists.", "  加载播放列表失败。")
+                            .to_string(),
+                        self.tr("  Press [r] to retry.", "  按 [r] 重试。")
+                            .to_string(),
+                    ];
+                }
+                return vec![
+                    self.tr("  No playlists found.", "  未找到播放列表。")
+                        .to_string(),
+                    self.tr("  Press [r] to reload.", "  按 [r] 重载。")
+                        .to_string(),
+                ];
             }
 
             let visible = self.pl_visible.min(self.provider_lists.len());
@@ -2261,8 +2273,8 @@ impl App {
         if self.focus == FocusArea::Provider {
             return vec![self
                 .tr(
-                    "[↑↓]Navigate [Enter]Load [u]Lang [i]Info [t]Theme [Tab]Focus [Q]Quit",
-                    "[↑↓]移动 [Enter]加载 [u]语言 [i]信息 [t]主题 [Tab]焦点 [Q]退出",
+                    "[↑↓]Navigate [Enter]Load [r]Reload [u]Lang [i]Info [t]Theme [Tab]Focus [Q]Quit",
+                    "[↑↓]移动 [Enter]加载 [r]重载 [u]语言 [i]信息 [t]主题 [Tab]焦点 [Q]退出",
                 )
                 .to_string()];
         }

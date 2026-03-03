@@ -25,3 +25,17 @@ theme = "Neo Mint"
 # 10-band EQ gains in dB (range: -12 to 12)
 # Bands: 70Hz, 180Hz, 320Hz, 600Hz, 1kHz, 3kHz, 6kHz, 12kHz, 14kHz, 16kHz
 eq = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+[navidrome]
+# Optional Navidrome provider config.
+# If set, this section takes precedence over NAVIDROME_* environment variables.
+
+# Server base URL
+url = ""
+
+# Username
+user = ""
+
+# Either password OR token is enough (password preferred when both are set)
+password = ""
+token = ""
