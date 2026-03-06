@@ -12,10 +12,12 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::style::Print;
 use crossterm::terminal::{self, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -32,6 +34,7 @@ const ANSI_YELLOW: &str = "\x1b[93m";
 const ANSI_YELLOW_BOLD: &str = "\x1b[1;93m";
 const ANSI_MAGENTA: &str = "\x1b[95m";
 const ANSI_RED: &str = "\x1b[91m";
+const ANSI_ASH: &str = "\x1b[38;5;245m";
 const ANSI_RETRO_GRID: &str = "\x1b[38;5;108m";
 const ANSI_RETRO_SUN: &str = "\x1b[38;5;222m";
 const ANSI_RETRO_WAVE: &str = "\x1b[38;5;203m";
@@ -40,6 +43,8 @@ const DEFAULT_VIS_ROWS: usize = 4;
 const EXPANDED_VIS_ROWS: usize = 20;
 const TICK_MS_ACTIVE: u64 = 50;
 const TICK_MS_VIS_OFF: u64 = 200;
+
+type LyricsFetchResult = std::result::Result<Vec<LyricLine>, LyricsError>;
 
 struct ThemeEntry {
     name: &'static str,
@@ -639,6 +644,11 @@ pub struct App {
     lyrics_error: Option<LyricsError>,
     lyrics_query: String,
     lyrics_scroll: usize,
+    lyrics_loading: bool,
+    lyrics_cache: HashMap<String, LyricsFetchResult>,
+    lyrics_inflight: HashSet<String>,
+    lyrics_fetch_tx: mpsc::Sender<(String, LyricsFetchResult)>,
+    lyrics_fetch_rx: mpsc::Receiver<(String, LyricsFetchResult)>,
     url_inputting: bool,
     url_input: String,
     full_vis: bool,
@@ -657,6 +667,7 @@ impl App {
     pub fn new(player: Player, playlist: Playlist, provider: Option<Box<dyn Provider>>) -> Self {
         let sample_rate = player.output_sample_rate();
         let has_provider = provider.is_some();
+        let (lyrics_fetch_tx, lyrics_fetch_rx) = mpsc::channel();
 
         let mut app = Self {
             player,
@@ -698,6 +709,11 @@ impl App {
             lyrics_error: None,
             lyrics_query: String::new(),
             lyrics_scroll: 0,
+            lyrics_loading: false,
+            lyrics_cache: HashMap::new(),
+            lyrics_inflight: HashSet::new(),
+            lyrics_fetch_tx,
+            lyrics_fetch_rx,
             url_inputting: false,
             url_input: String::new(),
             full_vis: false,
@@ -1485,6 +1501,8 @@ impl App {
     }
 
     fn on_tick(&mut self) {
+        self.drain_lyrics_prefetch();
+
         if let Some(err) = self.player.take_error() {
             self.error = Some(err);
         }
@@ -1496,6 +1514,20 @@ impl App {
             }
             self.title_off = 0;
             self.error = None;
+            self.lyrics_lines.clear();
+            self.lyrics_error = None;
+            self.lyrics_query.clear();
+            self.lyrics_scroll = 0;
+            self.lyrics_loading = false;
+            if let Some((track, _)) = self.playlist.current() {
+                self.prefetch_lyrics_for_track(&track);
+            }
+            if let Some(next_track) = self.playlist.peek_next() {
+                self.prefetch_lyrics_for_track(&next_track);
+            }
+            if self.show_lyrics {
+                self.fetch_lyrics_for_current(false);
+            }
             self.preload_next();
         }
         if self.player.is_playing() && !self.player.is_paused() && self.player.track_done() {
@@ -1564,6 +1596,7 @@ impl App {
         self.lyrics_error = None;
         self.lyrics_query.clear();
         self.lyrics_scroll = 0;
+        self.lyrics_loading = false;
 
         if track.ytdlp {
             match ytdlp::resolve_stream_url(&track.path) {
@@ -1581,6 +1614,10 @@ impl App {
 
         self.player.play_async(&track.path);
         self.error = None;
+        self.prefetch_lyrics_for_track(&track);
+        if let Some(next_track) = self.playlist.peek_next() {
+            self.prefetch_lyrics_for_track(&next_track);
+        }
         if self.show_lyrics {
             self.fetch_lyrics_for_current(false);
         }
@@ -1642,12 +1679,69 @@ impl App {
             .any(|line| line.start > Duration::ZERO)
     }
 
+    fn build_lyrics_query_key(&self, artist: &str, title: &str) -> String {
+        format!(
+            "{}\n{}",
+            artist.trim().to_lowercase(),
+            title.trim().to_lowercase()
+        )
+    }
+
+    fn start_lyrics_prefetch(&mut self, query: String, artist: String, title: String) {
+        if query.is_empty()
+            || self.lyrics_cache.contains_key(&query)
+            || self.lyrics_inflight.contains(&query)
+        {
+            return;
+        }
+
+        self.lyrics_inflight.insert(query.clone());
+        let tx = self.lyrics_fetch_tx.clone();
+        std::thread::spawn(move || {
+            let result = lyrics::fetch(&artist, &title);
+            let _ = tx.send((query, result));
+        });
+    }
+
+    fn prefetch_lyrics_for_track(&mut self, track: &crate::playlist::Track) {
+        let artist = track.artist.trim().to_string();
+        let title = track.title.trim().to_string();
+        if artist.is_empty() && title.is_empty() {
+            return;
+        }
+        let query = self.build_lyrics_query_key(&artist, &title);
+        self.start_lyrics_prefetch(query, artist, title);
+    }
+
+    fn drain_lyrics_prefetch(&mut self) {
+        while let Ok((query, result)) = self.lyrics_fetch_rx.try_recv() {
+            self.lyrics_inflight.remove(&query);
+            self.lyrics_cache.insert(query.clone(), result.clone());
+            if query != self.lyrics_query {
+                continue;
+            }
+
+            self.lyrics_loading = false;
+            match result {
+                Ok(lines) => {
+                    self.lyrics_lines = lines;
+                    self.lyrics_error = None;
+                }
+                Err(err) => {
+                    self.lyrics_lines.clear();
+                    self.lyrics_error = Some(err);
+                }
+            }
+        }
+    }
+
     fn fetch_lyrics_for_current(&mut self, force: bool) {
         let Some((track, _)) = self.playlist.current() else {
             self.lyrics_lines.clear();
             self.lyrics_error = Some(LyricsError::Message(
                 self.tr("No track loaded", "未加载曲目").to_string(),
             ));
+            self.lyrics_loading = false;
             return;
         };
 
@@ -1659,26 +1753,34 @@ impl App {
                 self.tr("No artist/title metadata", "缺少艺术家/标题元数据")
                     .to_string(),
             ));
+            self.lyrics_loading = false;
             return;
         }
 
-        let query = format!("{artist}\n{title}");
+        let query = self.build_lyrics_query_key(&artist, &title);
         if !force
             && query == self.lyrics_query
-            && (!self.lyrics_lines.is_empty() || self.lyrics_error.is_some())
+            && (!self.lyrics_lines.is_empty() || self.lyrics_error.is_some() || self.lyrics_loading)
         {
             return;
         }
 
-        self.lyrics_query = query;
+        self.lyrics_query = query.clone();
         self.lyrics_lines.clear();
         self.lyrics_error = None;
         self.lyrics_scroll = 0;
 
-        match lyrics::fetch(&artist, &title) {
-            Ok(lines) => self.lyrics_lines = lines,
-            Err(err) => self.lyrics_error = Some(err),
+        if let Some(cached) = self.lyrics_cache.get(&query).cloned() {
+            self.lyrics_loading = false;
+            match cached {
+                Ok(lines) => self.lyrics_lines = lines,
+                Err(err) => self.lyrics_error = Some(err),
+            }
+            return;
         }
+
+        self.lyrics_loading = true;
+        self.start_lyrics_prefetch(query, artist, title);
     }
 
     fn remove_playlist_track(&mut self, idx: usize) {
@@ -2082,6 +2184,16 @@ impl App {
     fn render_lyrics_overlay(&self) -> Vec<String> {
         let mut lines = vec![self.tr("L Y R I C S", "歌 词").to_string(), String::new()];
 
+        if self.lyrics_loading && self.lyrics_lines.is_empty() && self.lyrics_error.is_none() {
+            lines.push(
+                self.tr("  Loading lyrics...", "  正在加载歌词...")
+                    .to_string(),
+            );
+            lines.push(String::new());
+            lines.push(self.tr("[y/Esc]Close", "[y/Esc]关闭").to_string());
+            return lines;
+        }
+
         if let Some(err) = &self.lyrics_error {
             if matches!(err, LyricsError::NotFound) {
                 lines.push(
@@ -2138,7 +2250,9 @@ impl App {
                     self.lyrics_lines[i].text.clone()
                 };
                 if i == active_idx {
-                    lines.push(format!("> {text}"));
+                    let (top, bottom) = self.orbital_lyric_rows(&text);
+                    lines.push(top);
+                    lines.push(bottom);
                 } else {
                     lines.push(format!("  {text}"));
                 }
@@ -2169,6 +2283,32 @@ impl App {
                 .to_string(),
         );
         lines
+    }
+
+    fn orbital_lyric_rows(&self, text: &str) -> (String, String) {
+        let mut top = String::from("  ");
+        let mut bottom = String::from("  ");
+        let cjk = is_cjk_locale();
+        let phase = self.title_off as f32 * 0.42;
+
+        let top_shift = ((phase.sin() + 1.0) * 1.5).round() as usize;
+        let bottom_shift = ((phase.cos() + 1.0) * 1.5).round() as usize;
+        top.push_str(&" ".repeat(top_shift));
+        bottom.push_str(&" ".repeat(bottom_shift));
+
+        for (idx, ch) in text.chars().enumerate() {
+            let w = char_display_width(ch, cjk).max(1);
+            let theta = phase + idx as f32 * 0.85;
+            if theta.sin() >= 0.0 {
+                top.push(ch);
+                bottom.push_str(&" ".repeat(w));
+            } else {
+                top.push_str(&" ".repeat(w));
+                bottom.push(ch);
+            }
+        }
+
+        (top, bottom)
     }
 
     fn render_full_visualizer(&mut self) -> Vec<String> {
@@ -2776,6 +2916,12 @@ impl App {
             return self.colorize_track_info_line(content);
         }
 
+        if self.show_lyrics {
+            if let Some(styled) = self.colorize_lyrics_overlay_line(content, trimmed) {
+                return styled;
+            }
+        }
+
         if trimmed.starts_with("♫ ") {
             return paint(theme.value, content);
         }
@@ -2965,6 +3111,124 @@ impl App {
             return format!("{}{}", paint(theme.muted, label), paint(theme.value, rest));
         }
         paint(theme.value, content)
+    }
+
+    fn colorize_lyrics_overlay_line(&self, content: &str, trimmed: &str) -> Option<String> {
+        let theme = self.current_theme();
+
+        if is_shortcut_hint_line(trimmed) {
+            return Some(self.colorize_shortcut_line(content));
+        }
+
+        if trimmed.starts_with("No lyrics")
+            || trimmed.starts_with("尚未加载歌词")
+            || trimmed.starts_with("没有找到这首歌的歌词")
+        {
+            return Some(paint(theme.muted, content));
+        }
+
+        if trimmed.starts_with("Loading lyrics...") || trimmed.starts_with("正在加载歌词...")
+        {
+            return Some(paint(theme.value, content));
+        }
+
+        if trimmed.starts_with("Lyrics error:") || trimmed.starts_with("歌词错误:") {
+            return Some(paint(ANSI_RED, content));
+        }
+
+        if self.lyrics_have_timestamps() {
+            if let Some(active_text) = self.current_active_lyric_text() {
+                let (active_top, active_bottom) = self.orbital_lyric_rows(&active_text);
+                if content.trim_end() == active_top.trim_end() {
+                    return Some(self.colorize_active_lyric_wave(content, true));
+                }
+                if content.trim_end() == active_bottom.trim_end() {
+                    return Some(self.colorize_active_lyric_wave(content, false));
+                }
+            }
+        }
+
+        if content.starts_with("  ") {
+            return Some(self.colorize_passive_lyric_line(content));
+        }
+
+        None
+    }
+
+    fn current_active_lyric_text(&self) -> Option<String> {
+        if !self.show_lyrics || self.lyrics_lines.is_empty() || !self.lyrics_have_timestamps() {
+            return None;
+        }
+
+        let pos = self.player.position();
+        let mut active_idx = 0usize;
+        for (i, line) in self.lyrics_lines.iter().enumerate() {
+            if line.start <= pos {
+                active_idx = i;
+            } else {
+                break;
+            }
+        }
+
+        let text = self.lyrics_lines[active_idx].text.trim();
+        if text.is_empty() {
+            Some("♪".to_string())
+        } else {
+            Some(text.to_string())
+        }
+    }
+
+    fn colorize_active_lyric_wave(&self, content: &str, top_line: bool) -> String {
+        const TOP_COLORS: [&str; 8] = [
+            "\x1b[1;38;5;51m",
+            "\x1b[1;38;5;45m",
+            "\x1b[1;38;5;117m",
+            "\x1b[1;38;5;141m",
+            "\x1b[1;38;5;213m",
+            "\x1b[1;38;5;207m",
+            "\x1b[1;38;5;220m",
+            "\x1b[1;38;5;154m",
+        ];
+        const BOTTOM_COLORS: [&str; 8] = [
+            "\x1b[38;5;122m",
+            "\x1b[38;5;84m",
+            "\x1b[38;5;81m",
+            "\x1b[38;5;111m",
+            "\x1b[38;5;177m",
+            "\x1b[38;5;183m",
+            "\x1b[38;5;186m",
+            "\x1b[38;5;150m",
+        ];
+
+        let palette = if top_line {
+            &TOP_COLORS
+        } else {
+            &BOTTOM_COLORS
+        };
+        let mut out = String::new();
+        let phase = self.title_off / 2;
+
+        for (idx, ch) in content.chars().enumerate() {
+            if ch == ' ' {
+                out.push(' ');
+                continue;
+            }
+            let color = palette[(phase + idx) % palette.len()];
+            out.push_str(color);
+            out.push(ch);
+            out.push_str(ANSI_RESET);
+        }
+
+        out
+    }
+
+    fn colorize_passive_lyric_line(&self, content: &str) -> String {
+        let theme = self.current_theme();
+        if matches!(theme.name, "catppuccin-latte" | "flexoki-light") {
+            paint(theme.muted, content)
+        } else {
+            paint(ANSI_ASH, content)
+        }
     }
 }
 
@@ -3262,6 +3526,14 @@ fn display_width(s: &str) -> usize {
     }
 }
 
+fn char_display_width(ch: char, cjk: bool) -> usize {
+    if cjk {
+        UnicodeWidthChar::width_cjk(ch).unwrap_or(0)
+    } else {
+        UnicodeWidthChar::width(ch).unwrap_or(0)
+    }
+}
+
 fn pad_to_width(s: &str, width: usize) -> String {
     let current = display_width(s);
     if current >= width {
@@ -3281,11 +3553,7 @@ fn truncate_to_width(s: &str, max_width: usize) -> String {
     let cjk = is_cjk_locale();
 
     for ch in s.chars() {
-        let w = if cjk {
-            UnicodeWidthChar::width_cjk(ch).unwrap_or(0)
-        } else {
-            UnicodeWidthChar::width(ch).unwrap_or(0)
-        };
+        let w = char_display_width(ch, cjk);
 
         if used + w > max_width {
             break;
