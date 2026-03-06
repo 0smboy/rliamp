@@ -5,7 +5,7 @@ RLIAMP is a Rust rewrite of [cliamp](https://github.com/bjarneo/cliamp): a retro
 
 ## Upstream Sync Status
 
-This branch is synced with key upstream updates through **2026-03-01** (feature window from `1d3e9d6` to `e24a269`) for:
+This branch is synced with key upstream updates through **2026-03-06** (including upstream `78ce31d`) for:
 
 - recursive folder scanning
 - wider/centered UI refresh
@@ -23,6 +23,8 @@ This branch is synced with key upstream updates through **2026-03-01** (feature 
 - theme picker (`t`)
 - expanded built-in themes: `Neo Mint`, `tokyo-night`, `nord`, `gruvbox`, `rose-pine`, `catppuccin`, `kanagawa`, `everforest`, `hackerman`, `vantablack`, etc.
 - track info overlay (`i`)
+- lyrics overlay (`y`) with synced timestamp follow + manual scroll fallback
+- runtime URL load overlay (`U`) for direct stream/M3U/PLS/feed links
 - queue manager (`A`) and playlist manager (`p`)
 - save local track to `~/Music` (`S`)
 - playlist expand/collapse (`x`)
@@ -43,6 +45,8 @@ Pending upstream sync priorities (as of **2026-03-03**, upstream `v1.12.3`~`v1.1
 - Gapless playback for local file queues (auto-preload next track).
 - Real-time 10-band spectrum visualization with eight modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`, `Retro`, `Off`).
 - Full-screen visualizer mode (`V`), plus interactive keymap/theme/info overlays.
+- Lyrics overlay (`y`) with auto-follow for timestamped lyrics.
+- Runtime URL input (`U`) to load stream/playlist/feed links without restart.
 - Shortcut hints (content inside `[...]`) are theme-accent highlighted.
 - Queue manager (`A`) and playlist manager (`p`) overlays.
 - Save current local track to `~/Music` (`S`).
@@ -222,6 +226,8 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `1` `2` `3` `4` `5` `6` | Apply custom EQ mode |
 | `u` | Toggle UI language (EN / ZH) |
 | `i` | Track info / metadata overlay |
+| `y` | Lyrics overlay (synced/manual scroll) |
+| `U` | Load URL at runtime |
 | `a` | Toggle queue for selected track |
 | `A` | Queue manager |
 | `p` | Playlist manager |

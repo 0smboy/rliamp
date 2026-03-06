@@ -1,9 +1,11 @@
 mod background;
 mod config;
+mod lyrics;
 mod navidrome;
 mod player;
 mod playlist;
 mod provider;
+mod runtime_url;
 mod ui;
 mod visualizer;
 mod ytdlp;

@@ -1,7 +1,9 @@
 use crate::background::ParticleBackground;
+use crate::lyrics::{self, LyricLine, LyricsError};
 use crate::player::Player;
 use crate::playlist::{Playlist, RepeatMode};
 use crate::provider::{PlaylistInfo, Provider};
+use crate::runtime_url;
 use crate::visualizer::Visualizer;
 use crate::ytdlp;
 use anyhow::Result;
@@ -280,7 +282,7 @@ struct KeymapEntry {
     action_zh: &'static str,
 }
 
-const KEYMAP_ENTRIES: [KeymapEntry; 30] = [
+const KEYMAP_ENTRIES: [KeymapEntry; 32] = [
     KeymapEntry {
         key: "Space",
         action_en: "Play / Pause",
@@ -370,6 +372,16 @@ const KEYMAP_ENTRIES: [KeymapEntry; 30] = [
         key: "i",
         action_en: "Track info / metadata",
         action_zh: "曲目信息 / 元数据",
+    },
+    KeymapEntry {
+        key: "y",
+        action_en: "Lyrics overlay",
+        action_zh: "歌词叠层",
+    },
+    KeymapEntry {
+        key: "U",
+        action_en: "Load URL at runtime",
+        action_zh: "运行时加载 URL",
     },
     KeymapEntry {
         key: "S",
@@ -622,6 +634,13 @@ pub struct App {
     theme_cursor: usize,
     theme_saved_idx: usize,
     show_info: bool,
+    show_lyrics: bool,
+    lyrics_lines: Vec<LyricLine>,
+    lyrics_error: Option<LyricsError>,
+    lyrics_query: String,
+    lyrics_scroll: usize,
+    url_inputting: bool,
+    url_input: String,
     full_vis: bool,
     show_queue: bool,
     queue_cursor: usize,
@@ -674,6 +693,13 @@ impl App {
             theme_cursor: 0,
             theme_saved_idx: 0,
             show_info: false,
+            show_lyrics: false,
+            lyrics_lines: Vec::new(),
+            lyrics_error: None,
+            lyrics_query: String::new(),
+            lyrics_scroll: 0,
+            url_inputting: false,
+            url_input: String::new(),
             full_vis: false,
             show_queue: false,
             queue_cursor: 0,
@@ -927,6 +953,16 @@ impl App {
             return;
         }
 
+        if self.show_lyrics {
+            self.handle_lyrics_key(key);
+            return;
+        }
+
+        if self.url_inputting {
+            self.handle_url_input_key(key);
+            return;
+        }
+
         if self.searching {
             self.handle_search_key(key);
             return;
@@ -1078,7 +1114,17 @@ impl App {
             KeyCode::Char('i') | KeyCode::Char('I') => {
                 self.show_info = true;
             }
-            KeyCode::Char('u') | KeyCode::Char('U') => self.toggle_language(),
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.show_lyrics = !self.show_lyrics;
+                if self.show_lyrics {
+                    self.fetch_lyrics_for_current(false);
+                }
+            }
+            KeyCode::Char('U') => {
+                self.url_inputting = true;
+                self.url_input.clear();
+            }
+            KeyCode::Char('u') => self.toggle_language(),
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 self.show_themes = true;
                 self.theme_saved_idx = self.theme_idx;
@@ -1155,6 +1201,97 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') | KeyCode::Char('q') => {
                 self.show_info = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_lyrics_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.show_lyrics = false;
+            }
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                if !self.lyrics_have_timestamps() && self.lyrics_scroll > 0 {
+                    self.lyrics_scroll -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                if !self.lyrics_have_timestamps() {
+                    let max_scroll = self.lyrics_lines.len().saturating_sub(1);
+                    if self.lyrics_scroll < max_scroll {
+                        self.lyrics_scroll += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_url_input_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.url_inputting = false;
+                self.url_input.clear();
+            }
+            KeyCode::Enter => {
+                self.url_inputting = false;
+                let input = self.url_input.trim().to_string();
+                self.url_input.clear();
+                if input.is_empty() {
+                    return;
+                }
+
+                self.save_msg = Some(self.tr("Loading URL...", "正在加载 URL...").to_string());
+                self.save_msg_ttl = 80;
+
+                match runtime_url::resolve_runtime_url(&input) {
+                    Ok(tracks) if !tracks.is_empty() => {
+                        let was_empty = self.playlist.len() == 0;
+                        let was_playing = self.player.is_playing();
+                        let count = tracks.len();
+                        self.playlist.add(tracks);
+
+                        self.save_msg = Some(if self.lang == UiLang::Zh {
+                            format!("已加载 {count} 首曲目")
+                        } else {
+                            format!("Loaded {count} track(s)")
+                        });
+                        self.save_msg_ttl = 100;
+
+                        if was_empty {
+                            self.focus = FocusArea::Playlist;
+                            self.pl_cursor = 0;
+                            self.pl_scroll = 0;
+                            self.playlist.set_index(0);
+                            self.play_current_track();
+                        } else if !was_playing {
+                            self.play_current_track();
+                        }
+                    }
+                    Ok(_) => {
+                        self.save_msg = Some(
+                            self.tr("No tracks found at URL", "URL 中未发现可播放曲目")
+                                .to_string(),
+                        );
+                        self.save_msg_ttl = 100;
+                    }
+                    Err(err) => {
+                        self.save_msg = Some(format!(
+                            "{}: {err}",
+                            self.tr("URL load failed", "URL 加载失败")
+                        ));
+                        self.save_msg_ttl = 120;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.url_input.pop();
+            }
+            KeyCode::Char(ch) => {
+                if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.url_input.push(ch);
+                }
             }
             _ => {}
         }
@@ -1244,7 +1381,17 @@ impl App {
                     self.player.toggle_pause();
                 }
             }
-            KeyCode::Char('u') | KeyCode::Char('U') => self.toggle_language(),
+            KeyCode::Char('u') => self.toggle_language(),
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.show_lyrics = !self.show_lyrics;
+                if self.show_lyrics {
+                    self.fetch_lyrics_for_current(false);
+                }
+            }
+            KeyCode::Char('U') => {
+                self.url_inputting = true;
+                self.url_input.clear();
+            }
             KeyCode::Char('r') | KeyCode::Char('R') => self.reload_provider_playlists(),
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 self.show_themes = true;
@@ -1413,6 +1560,10 @@ impl App {
 
     fn play_track(&mut self, mut track: crate::playlist::Track, track_idx: usize) {
         self.title_off = 0;
+        self.lyrics_lines.clear();
+        self.lyrics_error = None;
+        self.lyrics_query.clear();
+        self.lyrics_scroll = 0;
 
         if track.ytdlp {
             match ytdlp::resolve_stream_url(&track.path) {
@@ -1430,6 +1581,9 @@ impl App {
 
         self.player.play_async(&track.path);
         self.error = None;
+        if self.show_lyrics {
+            self.fetch_lyrics_for_current(false);
+        }
         self.preload_next();
     }
 
@@ -1479,6 +1633,51 @@ impl App {
             if track.display_name().to_lowercase().contains(&query) {
                 self.search_results.push(idx);
             }
+        }
+    }
+
+    fn lyrics_have_timestamps(&self) -> bool {
+        self.lyrics_lines
+            .iter()
+            .any(|line| line.start > Duration::ZERO)
+    }
+
+    fn fetch_lyrics_for_current(&mut self, force: bool) {
+        let Some((track, _)) = self.playlist.current() else {
+            self.lyrics_lines.clear();
+            self.lyrics_error = Some(LyricsError::Message(
+                self.tr("No track loaded", "未加载曲目").to_string(),
+            ));
+            return;
+        };
+
+        let artist = track.artist.trim().to_string();
+        let title = track.title.trim().to_string();
+        if artist.is_empty() && title.is_empty() {
+            self.lyrics_lines.clear();
+            self.lyrics_error = Some(LyricsError::Message(
+                self.tr("No artist/title metadata", "缺少艺术家/标题元数据")
+                    .to_string(),
+            ));
+            return;
+        }
+
+        let query = format!("{artist}\n{title}");
+        if !force
+            && query == self.lyrics_query
+            && (!self.lyrics_lines.is_empty() || self.lyrics_error.is_some())
+        {
+            return;
+        }
+
+        self.lyrics_query = query;
+        self.lyrics_lines.clear();
+        self.lyrics_error = None;
+        self.lyrics_scroll = 0;
+
+        match lyrics::fetch(&artist, &title) {
+            Ok(lines) => self.lyrics_lines = lines,
+            Err(err) => self.lyrics_error = Some(err),
         }
     }
 
@@ -1653,6 +1852,12 @@ impl App {
         }
         if self.show_info {
             return wrap_frame(self.render_track_info_overlay());
+        }
+        if self.url_inputting {
+            return wrap_frame(self.render_url_input_overlay());
+        }
+        if self.show_lyrics {
+            return wrap_frame(self.render_lyrics_overlay());
         }
         if self.full_vis {
             return wrap_frame(self.render_full_visualizer());
@@ -1860,6 +2065,109 @@ impl App {
         lines.push(format!("  {}: {}", self.tr("Path", "路径"), track.path));
         lines.push(String::new());
         lines.push(self.tr("[Esc/i]Close", "[Esc/i]关闭").to_string());
+        lines
+    }
+
+    fn render_url_input_overlay(&self) -> Vec<String> {
+        vec![
+            self.tr("L O A D  U R L", "加 载  U R L").to_string(),
+            String::new(),
+            format!("  URL: {}_", self.url_input),
+            String::new(),
+            self.tr("[Enter]Load [Esc]Cancel", "[Enter]加载 [Esc]取消")
+                .to_string(),
+        ]
+    }
+
+    fn render_lyrics_overlay(&self) -> Vec<String> {
+        let mut lines = vec![self.tr("L Y R I C S", "歌 词").to_string(), String::new()];
+
+        if let Some(err) = &self.lyrics_error {
+            if matches!(err, LyricsError::NotFound) {
+                lines.push(
+                    self.tr("  No lyrics found for this track", "  没有找到这首歌的歌词")
+                        .to_string(),
+                );
+            } else {
+                lines.push(format!("  {}: {err}", self.tr("Lyrics error", "歌词错误")));
+            }
+            lines.push(String::new());
+            lines.push(self.tr("[y/Esc]Close", "[y/Esc]关闭").to_string());
+            return lines;
+        }
+
+        if self.lyrics_lines.is_empty() {
+            lines.push(
+                self.tr(
+                    "  No lyrics loaded. Press [y] to retry.",
+                    "  尚未加载歌词，按 [y] 重试。",
+                )
+                .to_string(),
+            );
+            lines.push(String::new());
+            lines.push(self.tr("[y/Esc]Close", "[y/Esc]关闭").to_string());
+            return lines;
+        }
+
+        let visible = if let Ok((_w, h)) = terminal::size() {
+            (h as usize).saturating_sub(14).clamp(6, 18)
+        } else {
+            12
+        };
+
+        if self.lyrics_have_timestamps() {
+            let pos = self.player.position();
+            let mut active_idx = 0usize;
+            for (i, line) in self.lyrics_lines.iter().enumerate() {
+                if line.start <= pos {
+                    active_idx = i;
+                } else {
+                    break;
+                }
+            }
+
+            let mut start = active_idx.saturating_sub(visible / 2);
+            if start + visible > self.lyrics_lines.len() {
+                start = self.lyrics_lines.len().saturating_sub(visible);
+            }
+            let end = (start + visible).min(self.lyrics_lines.len());
+            for i in start..end {
+                let text = if self.lyrics_lines[i].text.trim().is_empty() {
+                    "♪".to_string()
+                } else {
+                    self.lyrics_lines[i].text.clone()
+                };
+                if i == active_idx {
+                    lines.push(format!("> {text}"));
+                } else {
+                    lines.push(format!("  {text}"));
+                }
+            }
+
+            lines.push(String::new());
+            lines.push(self.tr("[y/Esc]Close", "[y/Esc]关闭").to_string());
+            return lines;
+        }
+
+        let mut start = self.lyrics_scroll;
+        if start + visible > self.lyrics_lines.len() {
+            start = self.lyrics_lines.len().saturating_sub(visible);
+        }
+        let end = (start + visible).min(self.lyrics_lines.len());
+        for i in start..end {
+            let text = if self.lyrics_lines[i].text.trim().is_empty() {
+                "♪".to_string()
+            } else {
+                self.lyrics_lines[i].text.clone()
+            };
+            lines.push(format!("  {text}"));
+        }
+
+        lines.push(String::new());
+        lines.push(
+            self.tr("[↑↓/jk]Scroll [y/Esc]Close", "[↑↓/jk]滚动 [y/Esc]关闭")
+                .to_string(),
+        );
         lines
     }
 
@@ -2300,12 +2608,18 @@ impl App {
         }
 
         if self.focus == FocusArea::Provider {
-            return vec![self
-                .tr(
-                    "[↑↓]Navigate [Enter]Load [r]Reload [u]Lang [i]Info [t]Theme [Tab]Focus [Q]Quit",
-                    "[↑↓]移动 [Enter]加载 [r]重载 [u]语言 [i]信息 [t]主题 [Tab]焦点 [Q]退出",
+            return vec![
+                self.tr(
+                    "[↑↓]Navigate [Enter]Load [r]Reload [U]URL [y]Lyrics [i]Info [t]Theme",
+                    "[↑↓]移动 [Enter]加载 [r]重载 [U]URL [y]歌词 [i]信息 [t]主题",
                 )
-                .to_string()];
+                .to_string(),
+                self.tr(
+                    "[u]Lang [g]BG [A]QMgr [p]PlMgr [Tab]Focus [Q]Quit",
+                    "[u]语言 [g]背景 [A]队列管 [p]列表管 [Tab]焦点 [Q]退出",
+                )
+                .to_string(),
+            ];
         }
 
         let mut line1 = String::from(self.tr("[Spc]⏯ [<>]Trk ", "[空格]⏯ [<>]曲目 "));
@@ -2313,20 +2627,25 @@ impl App {
             line1.push_str(self.tr("[←→]Seek ", "[←→]快进/退 "));
         }
         line1.push_str(self.tr(
-            "[+-]Vol [m]Mono [e]EQ [c]Vis [V]Full [t]Theme [u]Lang [i]Info",
-            "[+-]音量 [m]单声道 [e]EQ [c]频谱 [V]全屏 [t]主题 [u]语言 [i]信息",
+            "[+-]Vol [m]Mono [e]EQ [c]Vis [V]Full [t]Theme",
+            "[+-]音量 [m]单声道 [e]EQ [c]频谱 [V]全屏 [t]主题",
         ));
 
-        let mut line2 = String::new();
+        let line2 = self.tr(
+            "[y]Lyrics [U]URL [u]Lang [i]Info [g]BG [a]Queue [A]QMgr [p]PlMgr [S]Save",
+            "[y]歌词 [U]URL [u]语言 [i]信息 [g]背景 [a]队列 [A]队列管 [p]列表管 [S]保存",
+        );
+
+        let mut line3 = String::new();
         if self.provider.is_some() {
-            line2.push_str(self.tr("[Esc]Back ", "[Esc]返回 "));
+            line3.push_str(self.tr("[Esc]Back ", "[Esc]返回 "));
         }
-        line2.push_str(self.tr(
-            "[g]BG [a]Queue [A]QueueMgr [p]PlMgr [S]Save [x]Expand [/]Search [Tab]Focus [Q]Quit",
-            "[g]背景 [a]队列 [A]队列管理 [p]列表管理 [S]保存 [x]展开 [/]搜索 [Tab]焦点 [Q]退出",
+        line3.push_str(self.tr(
+            "[x]Expand [/]Search [Tab]Focus [Q]Quit",
+            "[x]展开 [/]搜索 [Tab]焦点 [Q]退出",
         ));
 
-        vec![line1, line2]
+        vec![line1, line2.to_string(), line3]
     }
 
     fn colorize_frame(&self, frame: &str) -> String {
