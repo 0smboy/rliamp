@@ -1,8 +1,8 @@
 class Rliamp < Formula
   desc "Retro terminal music player with visualizer and EQ"
   homepage "https://github.com/0smboy/rliamp"
-  url "https://github.com/0smboy/rliamp/archive/refs/tags/v0.1.12.tar.gz"
-  sha256 "cb3d98e47ccf1f0a9d584ecb9f226ede0a31797a82e6fe277b1283169d42b584"
+  url "https://github.com/0smboy/rliamp/archive/refs/tags/v0.1.13.tar.gz"
+  sha256 "2c47a4bba278caf1ccfa75f2c0288d2156e987f9e2561edfbe33166ff99a3066"
   license :cannot_represent
 
   depends_on "rust" => :build
