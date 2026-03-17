@@ -46,10 +46,6 @@ impl RadioProvider {
 }
 
 impl Provider for RadioProvider {
-    fn name(&self) -> &str {
-        "Radio"
-    }
-
     fn playlists(&self) -> Result<Vec<PlaylistInfo>> {
         Ok(self
             .stations
