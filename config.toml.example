@@ -22,6 +22,17 @@ eq_preset = "Flat"
 # Leave empty to use default
 theme = "Neo Mint"
 
+# Startup provider: "radio", "navidrome", or "none"
+provider = "radio"
+
+# Default visualizer: "Neon", "Bricks", "Columns", "Wave", "Scatter",
+# "Flame", "Retro", "Matrix", "Binary", "Snow", or "Off"
+# Leave empty to use default
+visualizer = "Neon"
+
+# Large seek step for Shift+Left / Shift+Right (seconds)
+seek_large_step_sec = 30
+
 # 10-band EQ gains in dB (range: -12 to 12)
 # Bands: 70Hz, 180Hz, 320Hz, 600Hz, 1kHz, 3kHz, 6kHz, 12kHz, 14kHz, 16kHz
 eq = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]

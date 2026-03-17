@@ -1,0 +1,9 @@
+# Copy to ~/.config/rliamp/radios.toml
+
+[[station]]
+name = "Jazz FM"
+url = "https://example.com/jazz/stream.m3u"
+
+[[station]]
+name = "Ambient Radio"
+url = "https://example.com/ambient/stream.pls"

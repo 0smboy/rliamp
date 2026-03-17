@@ -1,8 +1,10 @@
-use crate::playlist::{is_feed, is_m3u, is_pls, is_url, is_ytdl, Track};
+use crate::playlist::{is_feed, is_m3u, is_pls, is_url, is_xiaoyuzhou_episode, is_ytdl, Track};
 use crate::ytdlp;
 use anyhow::{anyhow, Context, Result};
+use quick_xml::escape::unescape;
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::time::Duration;
@@ -22,6 +24,11 @@ pub fn resolve_runtime_url(url: &str) -> Result<Vec<Track>> {
     }
     if !is_url(url) {
         return Err(anyhow!("URL must start with http:// or https://"));
+    }
+
+    if is_xiaoyuzhou_episode(url) {
+        return resolve_xiaoyuzhou_episode(url)
+            .with_context(|| format!("resolving xiaoyuzhou episode: {url}"));
     }
 
     if is_ytdl(url) {
@@ -90,6 +97,144 @@ fn sniff_remote_input_kind(url: &str) -> Result<RemoteInputKind> {
     }
 
     Ok(RemoteInputKind::Other)
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct XiaoyuzhouSchema {
+    name: Option<String>,
+    #[serde(rename = "associatedMedia")]
+    associated_media: Option<XiaoyuzhouAssociatedMedia>,
+    #[serde(rename = "partOfSeries")]
+    part_of_series: Option<XiaoyuzhouPartOfSeries>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct XiaoyuzhouAssociatedMedia {
+    #[serde(rename = "contentUrl")]
+    content_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct XiaoyuzhouPartOfSeries {
+    name: Option<String>,
+}
+
+fn resolve_xiaoyuzhou_episode(page_url: &str) -> Result<Vec<Track>> {
+    let response = ureq::get(page_url)
+        .timeout(Duration::from_secs(15))
+        .set(
+            "User-Agent",
+            "rliamp/0.1 (+https://github.com/0smboy/rliamp)",
+        )
+        .call()
+        .map_err(|err| anyhow!("request failed: {err}"))?;
+
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take(2 << 20)
+        .read_to_string(&mut body)
+        .map_err(|err| anyhow!("failed to read xiaoyuzhou page: {err}"))?;
+
+    Ok(vec![parse_xiaoyuzhou_episode_html(page_url, &body)?])
+}
+
+fn parse_xiaoyuzhou_episode_html(page_url: &str, doc: &str) -> Result<Track> {
+    let mut audio_url = extract_meta_content(doc, "property", "og:audio");
+    let mut title = extract_meta_content(doc, "property", "og:title");
+    let mut artist = None;
+
+    if let Some(raw_schema) = extract_xiaoyuzhou_schema_json(doc) {
+        let schema: XiaoyuzhouSchema = serde_json::from_str(&raw_schema)
+            .with_context(|| "parsing xiaoyuzhou schema.org JSON-LD")?;
+        if audio_url.is_none() {
+            audio_url = schema.associated_media.and_then(|media| media.content_url);
+        }
+        if title.is_none() {
+            title = schema.name;
+        }
+        if artist.is_none() {
+            artist = schema.part_of_series.and_then(|series| series.name);
+        }
+    }
+
+    let path = audio_url.ok_or_else(|| anyhow!("audio URL not found in xiaoyuzhou page"))?;
+    let title = title.unwrap_or_else(|| page_url.to_string());
+
+    Ok(Track {
+        path,
+        title,
+        artist: artist.unwrap_or_default(),
+        stream: true,
+        ytdlp: false,
+    })
+}
+
+fn extract_xiaoyuzhou_schema_json(doc: &str) -> Option<String> {
+    let lower = doc.to_ascii_lowercase();
+    let idx = lower
+        .find("name=\"schema:podcast-show\"")
+        .or_else(|| lower.find("name='schema:podcast-show'"))?;
+    let after = &doc[idx..];
+    let open = after.find('>')?;
+    let rest = &after[open + 1..];
+    let close = rest.to_ascii_lowercase().find("</script>")?;
+    let raw = rest[..close].trim();
+    if raw.is_empty() {
+        None
+    } else {
+        Some(html_unescape(raw))
+    }
+}
+
+fn extract_meta_content(doc: &str, attr: &str, value: &str) -> Option<String> {
+    let mut rest = doc;
+    loop {
+        let lower = rest.to_ascii_lowercase();
+        let start = lower.find("<meta")?;
+        let tail = &rest[start..];
+        let end = tail.find('>')?;
+        let tag = &tail[..=end];
+        if extract_attr(tag, attr)
+            .map(|found| found.eq_ignore_ascii_case(value))
+            .unwrap_or(false)
+        {
+            if let Some(content) = extract_attr(tag, "content") {
+                let content = html_unescape(content.trim());
+                if !content.is_empty() {
+                    return Some(content);
+                }
+            }
+        }
+        rest = &tail[end + 1..];
+    }
+}
+
+fn extract_attr<'a>(tag: &'a str, attr: &str) -> Option<&'a str> {
+    let lower = tag.to_ascii_lowercase();
+    let needle = format!("{attr}=");
+    let idx = lower.find(&needle)?;
+    let start = idx + needle.len();
+    let bytes = tag.as_bytes();
+    let quote = *bytes.get(start)?;
+
+    if quote == b'"' || quote == b'\'' {
+        let value_start = start + 1;
+        let end_rel = tag[value_start..].find(quote as char)?;
+        return Some(&tag[value_start..value_start + end_rel]);
+    }
+
+    let tail = &tag[start..];
+    let end = tail
+        .find(|ch: char| ch.is_ascii_whitespace() || ch == '>' || ch == '/')
+        .unwrap_or(tail.len());
+    Some(&tail[..end])
+}
+
+fn html_unescape(raw: &str) -> String {
+    unescape(raw)
+        .map(|value| value.into_owned())
+        .unwrap_or_else(|_| raw.to_string())
 }
 
 fn resolve_m3u(url: &str) -> Result<Vec<Track>> {

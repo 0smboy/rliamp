@@ -278,7 +278,12 @@ fn sanitize_tag(raw: String) -> String {
 }
 
 pub fn is_url(path: &str) -> bool {
-    path.starts_with("http://") || path.starts_with("https://")
+    path.starts_with("http://")
+        || path.starts_with("https://")
+        || path.starts_with("ytsearch:")
+        || path.starts_with("ytsearch1:")
+        || path.starts_with("scsearch:")
+        || path.starts_with("scsearch1:")
 }
 
 pub fn is_ytdl(path: &str) -> bool {
@@ -286,27 +291,53 @@ pub fn is_ytdl(path: &str) -> bool {
         return false;
     }
 
+    if path.starts_with("ytsearch:")
+        || path.starts_with("ytsearch1:")
+        || path.starts_with("scsearch:")
+        || path.starts_with("scsearch1:")
+    {
+        return true;
+    }
+
+    let Some(host) = normalized_url_host(path) else {
+        return false;
+    };
+
+    matches!(
+        host.as_str(),
+        "soundcloud.com"
+            | "youtube.com"
+            | "youtu.be"
+            | "music.youtube.com"
+            | "bandcamp.com"
+            | "music.163.com"
+            | "bilibili.com"
+            | "b23.tv"
+    ) || host.ends_with(".bandcamp.com")
+        || host.ends_with(".bilibili.com")
+}
+
+pub fn is_xiaoyuzhou_episode(path: &str) -> bool {
+    if !is_url(path) {
+        return false;
+    }
+
+    let Some(host) = normalized_url_host(path) else {
+        return false;
+    };
+    if host != "xiaoyuzhoufm.com" {
+        return false;
+    }
+
     let without_scheme = path
         .strip_prefix("http://")
         .or_else(|| path.strip_prefix("https://"))
         .unwrap_or(path);
-    let host_port = without_scheme.split('/').next().unwrap_or_default();
-    if host_port.is_empty() {
-        return false;
-    }
-    let host = host_port
-        .split(':')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .trim_start_matches("www.")
-        .trim_start_matches("m.")
-        .to_ascii_lowercase();
-
-    matches!(
-        host.as_str(),
-        "soundcloud.com" | "youtube.com" | "youtu.be" | "music.youtube.com" | "bandcamp.com"
-    ) || host.ends_with(".bandcamp.com")
+    let path_part = without_scheme
+        .split_once('/')
+        .map(|(_, rest)| rest)
+        .unwrap_or_default();
+    path_part.to_ascii_lowercase().starts_with("episode/")
 }
 
 pub fn is_m3u(path: &str) -> bool {
@@ -375,6 +406,28 @@ fn track_from_url(url: String) -> Track {
         stream: true,
         ytdlp: false,
     }
+}
+
+fn normalized_url_host(path: &str) -> Option<String> {
+    let without_scheme = path
+        .strip_prefix("http://")
+        .or_else(|| path.strip_prefix("https://"))
+        .unwrap_or(path);
+    let host_port = without_scheme.split('/').next().unwrap_or_default();
+    if host_port.is_empty() {
+        return None;
+    }
+
+    Some(
+        host_port
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_start_matches("www.")
+            .trim_start_matches("m.")
+            .to_ascii_lowercase(),
+    )
 }
 
 #[derive(Debug, Default)]

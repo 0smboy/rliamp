@@ -16,9 +16,12 @@ pub struct Config {
     pub eq: [f32; 10],
     pub eq_preset: String,
     pub theme: Option<String>,
+    pub visualizer: Option<String>,
+    pub provider: String,
     pub repeat: String,
     pub shuffle: bool,
     pub mono: bool,
+    pub seek_large_step_sec: u64,
     pub navidrome: NavidromeConfig,
 }
 
@@ -29,9 +32,12 @@ impl Default for Config {
             eq: [0.0; 10],
             eq_preset: "Flat".to_string(),
             theme: None,
+            visualizer: None,
+            provider: "radio".to_string(),
             repeat: "off".to_string(),
             shuffle: false,
             mono: false,
+            seek_large_step_sec: 30,
             navidrome: NavidromeConfig::default(),
         }
     }
@@ -91,6 +97,23 @@ impl Config {
                         let v = trim_quotes(value).trim();
                         if !v.is_empty() {
                             cfg.theme = Some(v.to_string());
+                        }
+                    }
+                    "provider" => {
+                        let v = trim_quotes(value).trim().to_ascii_lowercase();
+                        if matches!(v.as_str(), "radio" | "navidrome" | "none") {
+                            cfg.provider = v;
+                        }
+                    }
+                    "visualizer" => {
+                        let v = trim_quotes(value).trim();
+                        if !v.is_empty() {
+                            cfg.visualizer = Some(v.to_string());
+                        }
+                    }
+                    "seek_large_step_sec" | "seek_step_large" => {
+                        if let Ok(v) = value.parse::<u64>() {
+                            cfg.seek_large_step_sec = v.clamp(1, 600);
                         }
                     }
                     "eq" => cfg.eq = parse_eq(value),

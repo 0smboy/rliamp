@@ -5,6 +5,7 @@ use std::sync::Arc;
 const NUM_BANDS: usize = 10;
 const FFT_SIZE: usize = 2048;
 const BAR_WIDTH: usize = 7;
+const CHAR_COLS: usize = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
 const BAND_EDGES: [f32; 11] = [
     20.0, 100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0, 6400.0, 12800.0, 16000.0, 20000.0,
 ];
@@ -29,10 +30,18 @@ pub enum VisualizerMode {
     Scatter,
     Flame,
     Retro,
+    Matrix,
+    Binary,
+    Snow,
     None,
 }
 
 const BRAILLE_BITS: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+const MATRIX_CHARS: [char; 40] = [
+    'ｦ', 'ｧ', 'ｨ', 'ｩ', 'ｪ', 'ｫ', 'ｬ', 'ｭ', 'ｮ', 'ｯ', 'ｰ', 'ｱ', 'ｲ', 'ｳ', 'ｴ', 'ｵ', 'ｶ', 'ｷ', 'ｸ',
+    'ｹ', 'ｺ', 'ｻ', 'ｼ', 'ｽ', 'ｾ', 'ｿ', 'ﾀ', 'ﾁ', 'ﾂ', 'ﾃ', 'ﾄ', '0', '1', '2', '3', '4', '5', '6',
+    '7', '9',
+];
 
 impl Visualizer {
     pub fn new(sample_rate: f32) -> Self {
@@ -65,7 +74,10 @@ impl Visualizer {
             VisualizerMode::Wave => VisualizerMode::Scatter,
             VisualizerMode::Scatter => VisualizerMode::Flame,
             VisualizerMode::Flame => VisualizerMode::Retro,
-            VisualizerMode::Retro => VisualizerMode::None,
+            VisualizerMode::Retro => VisualizerMode::Matrix,
+            VisualizerMode::Matrix => VisualizerMode::Binary,
+            VisualizerMode::Binary => VisualizerMode::Snow,
+            VisualizerMode::Snow => VisualizerMode::None,
             VisualizerMode::None => VisualizerMode::Neon,
         };
     }
@@ -79,8 +91,34 @@ impl Visualizer {
             VisualizerMode::Scatter => "Scatter",
             VisualizerMode::Flame => "Flame",
             VisualizerMode::Retro => "Retro",
+            VisualizerMode::Matrix => "Matrix",
+            VisualizerMode::Binary => "Binary",
+            VisualizerMode::Snow => "Snow",
             VisualizerMode::None => "Off",
         }
+    }
+
+    pub fn set_mode_by_name(&mut self, name: &str) -> bool {
+        let normalized = normalize_mode_name(name);
+        self.mode = match normalized.as_str() {
+            "" | "default" | "neon" => VisualizerMode::Neon,
+            "bricks" => VisualizerMode::Bricks,
+            "columns" => VisualizerMode::Columns,
+            "wave" => VisualizerMode::Wave,
+            "scatter" => VisualizerMode::Scatter,
+            "flame" => VisualizerMode::Flame,
+            "retro" | "synthwave" => VisualizerMode::Retro,
+            "matrix" => VisualizerMode::Matrix,
+            "binary" => VisualizerMode::Binary,
+            "snow" => VisualizerMode::Snow,
+            "off" | "none" => VisualizerMode::None,
+            _ => return false,
+        };
+        true
+    }
+
+    pub fn mode(&self) -> VisualizerMode {
+        self.mode
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -175,13 +213,16 @@ impl Visualizer {
             VisualizerMode::Scatter => self.render_scatter(bands),
             VisualizerMode::Flame => self.render_flame(bands),
             VisualizerMode::Retro => self.render_retro(bands),
+            VisualizerMode::Matrix => self.render_matrix(bands),
+            VisualizerMode::Binary => self.render_binary(bands),
+            VisualizerMode::Snow => self.render_snow(bands),
             VisualizerMode::None => self.render_none(),
         }
     }
 
     fn render_none(&self) -> Vec<String> {
         let rows = self.rows.max(2);
-        let width = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
+        let width = CHAR_COLS;
         vec![" ".repeat(width); rows]
     }
 
@@ -297,7 +338,6 @@ impl Visualizer {
 
     fn render_wave(&self) -> Vec<String> {
         let rows = self.rows.max(2);
-        const CHAR_COLS: usize = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
         let dot_rows = rows * 4;
         let dot_cols = CHAR_COLS * 2;
         let mut lines = vec![String::new(); rows];
@@ -340,7 +380,6 @@ impl Visualizer {
 
     fn render_scatter(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
         let rows = self.rows.max(2);
-        const CHAR_COLS: usize = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
         let dot_rows = rows * 4;
         let mut lines = vec![String::new(); rows];
 
@@ -414,7 +453,6 @@ impl Visualizer {
     }
 
     fn render_retro(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
-        const CHAR_COLS: usize = NUM_BANDS * BAR_WIDTH + (NUM_BANDS - 1);
         let rows = self.rows.max(4);
         let dot_rows = rows * 4;
         let dot_cols = CHAR_COLS * 2;
@@ -570,6 +608,115 @@ impl Visualizer {
 
         lines
     }
+
+    fn render_matrix(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
+        let rows = self.rows.max(4);
+        let mut lines = vec![String::new(); rows];
+
+        for row in 0..rows {
+            for band in 0..NUM_BANDS {
+                for c in 0..BAR_WIDTH {
+                    let col = band * (BAR_WIDTH + 1) + c;
+                    let energy = bands[band];
+                    let gate = hash01(self.frame / 20, band, 0, col);
+                    if gate > energy * 1.45 + 0.12 {
+                        lines[row].push(' ');
+                        continue;
+                    }
+
+                    let speed = 2 + (col % 3) as u64;
+                    let trail_len = 3 + (col % 3) as isize;
+                    let cycle = rows as isize + trail_len + 4;
+                    let offset = ((col * 7 + band * 13) % cycle as usize) as isize;
+                    let pos = ((self.frame / speed) as isize + offset) % cycle;
+                    let dist = pos - row as isize;
+
+                    let ch = if !(0..=trail_len).contains(&dist) {
+                        ' '
+                    } else if dist == 0 {
+                        '█'
+                    } else if dist <= 2 {
+                        matrix_char(self.frame / 4, band, row, col)
+                    } else {
+                        '·'
+                    };
+
+                    lines[row].push(ch);
+                }
+                if band + 1 < NUM_BANDS {
+                    lines[row].push(' ');
+                }
+            }
+        }
+
+        lines
+    }
+
+    fn render_binary(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
+        let rows = self.rows.max(4);
+        let mut lines = vec![String::new(); rows];
+
+        for row in 0..rows {
+            for band in 0..NUM_BANDS {
+                let energy = bands[band];
+                for c in 0..BAR_WIDTH {
+                    let col = band * (BAR_WIDTH + 1) + c;
+                    let speed = 1 + (3.0 - (energy * 3.0).round()).clamp(0.0, 3.0) as u64;
+                    let scroll = (self.frame / speed.max(1)) as usize;
+                    let h = hash01(0, band, row + scroll, col);
+                    let threshold = (0.15 + energy * 0.6).clamp(0.0, 0.95);
+                    lines[row].push(if h < threshold { '1' } else { '0' });
+                }
+                if band + 1 < NUM_BANDS {
+                    lines[row].push(' ');
+                }
+            }
+        }
+
+        lines
+    }
+
+    fn render_snow(&self, bands: [f32; NUM_BANDS]) -> Vec<String> {
+        let rows = self.rows.max(4);
+        let dot_rows = rows * 4;
+        let dot_cols = CHAR_COLS * 2;
+        let avg_energy = bands.iter().copied().sum::<f32>() / NUM_BANDS as f32;
+        let wind = (self.frame as f32 * 0.03).sin() * (0.5 + avg_energy * 1.8);
+        let mut lines = vec![String::new(); rows];
+
+        for row in 0..rows {
+            for ch in 0..CHAR_COLS {
+                let mut cell = 0x2800u32;
+                for dr in 0..4 {
+                    for dc in 0..2 {
+                        let dot_row = row * 4 + dr;
+                        let dot_col = ch * 2 + dc;
+                        let band = (dot_col * NUM_BANDS / dot_cols).min(NUM_BANDS - 1);
+                        let energy = bands[band];
+                        let col_speed = 1 + (dot_col * 7919 % 4);
+                        let adjusted_row =
+                            dot_row as isize - (self.frame as isize * col_speed as isize) / 3;
+                        let wind_drift =
+                            (wind * dot_row as f32 / dot_rows.max(1) as f32).round() as isize;
+                        let adjusted_col = dot_col as isize - wind_drift;
+                        let h = hash01(
+                            0,
+                            band,
+                            adjusted_row.max(0) as usize,
+                            adjusted_col.max(0) as usize,
+                        );
+                        let threshold = 0.015 + energy * 0.05;
+                        if h < threshold {
+                            cell |= BRAILLE_BITS[dr][dc];
+                        }
+                    }
+                }
+                lines[row].push(char::from_u32(cell).unwrap_or(' '));
+            }
+        }
+
+        lines
+    }
 }
 
 fn sparkle_band(level: f32, phase: u64, idx: usize) -> String {
@@ -612,4 +759,16 @@ fn hash01(frame: u64, band: usize, row: usize, col: usize) -> f32 {
     z = z.wrapping_mul(0x94D049BB133111EB);
     z ^= z >> 31;
     ((z >> 11) as f64 / ((1u64 << 53) - 1) as f64) as f32
+}
+
+fn matrix_char(frame: u64, band: usize, row: usize, col: usize) -> char {
+    let idx = (hash01(frame, band, row, col) * MATRIX_CHARS.len() as f32) as usize;
+    MATRIX_CHARS[idx.min(MATRIX_CHARS.len() - 1)]
+}
+
+fn normalize_mode_name(name: &str) -> String {
+    name.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
 }

@@ -16,8 +16,9 @@ This branch is synced with key upstream updates through **2026-03-06** (includin
 - URL / M3U / PLS / podcast RSS input handling
 - local playlist file expansion for `.m3u`, `.m3u8`, `.pls`
 - gapless playback with automatic next-track preload
-- yt-dlp input support (SoundCloud / YouTube / Bandcamp)
-- visualizer mode toggle (`Neon` / `Bricks` / `Columns` / `Wave` / `Scatter` / `Flame` / `Retro` / `Off`)
+- yt-dlp input support (SoundCloud / YouTube / Bandcamp / Bilibili / NetEase URLs supported by local `yt-dlp`)
+- Xiaoyuzhou episode page resolution
+- visualizer mode toggle (`Neon` / `Bricks` / `Columns` / `Wave` / `Scatter` / `Flame` / `Retro` / `Matrix` / `Binary` / `Snow` / `Off`)
 - full-screen visualizer mode (`V`)
 - interactive keymap (`Ctrl+K`, supports up/down navigation)
 - theme picker (`t`)
@@ -25,11 +26,14 @@ This branch is synced with key upstream updates through **2026-03-06** (includin
 - track info overlay (`i`)
 - lyrics overlay (`y`) with synced timestamp follow + manual scroll fallback
 - runtime URL load overlay (`U`) for direct stream/M3U/PLS/feed links
+- runtime YouTube / SoundCloud find (`f` / `F`) with queue-next behavior
+- jump to time (`J`)
 - queue manager (`A`) and playlist manager (`p`)
 - save local track to `~/Music` (`S`)
 - playlist expand/collapse (`x`)
+- radio provider with custom `~/.config/rliamp/radios.toml` support
 - provider playlist load now replaces current queue before autoplay
-- CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--eq-preset`, `--auto-play`
+- CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--provider`, `--eq-preset`, `--auto-play`
 - ffmpeg fallback decode when Symphonia fails (including unsupported WAV variants)
 - Navidrome provider integration (`[navidrome]` config section + env fallback)
 
@@ -41,17 +45,21 @@ Pending upstream sync priorities (as of **2026-03-03**, upstream `v1.12.3`~`v1.1
 - Local playback: `mp3`, `wav`, `flac`, `ogg`, `m4a`, `aac`, `m4b`, `m4p`, `alac`, `wma`, `opus`.
 - URL playback for direct HTTP/HTTPS audio links.
 - Local and remote M3U/PLS playlist expansion, plus podcast RSS feed support.
-- SoundCloud / YouTube / Bandcamp URL support via `yt-dlp`.
+- SoundCloud / YouTube / Bandcamp / Bilibili URL support via `yt-dlp`.
+- Xiaoyuzhou episode page resolution to playable podcast audio.
 - Gapless playback for local file queues (auto-preload next track).
-- Real-time 10-band spectrum visualization with eight modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`, `Retro`, `Off`).
+- Real-time 10-band spectrum visualization with eleven modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`, `Retro`, `Matrix`, `Binary`, `Snow`, `Off`).
 - Full-screen visualizer mode (`V`), plus interactive keymap/theme/info overlays.
 - Lyrics overlay (`y`) with auto-follow for timestamped lyrics.
 - Runtime URL input (`U`) to load stream/playlist/feed links without restart.
+- Runtime YouTube / SoundCloud find (`f` / `F`) with queue-next behavior.
+- Jump to time (`J`) for local tracks.
 - Shortcut hints (content inside `[...]`) are theme-accent highlighted.
 - Queue manager (`A`) and playlist manager (`p`) overlays.
 - Save current local track to `~/Music` (`S`).
 - 10-band parametric EQ with built-in presets.
-- CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--eq-preset`, `--auto-play`.
+- Configurable large seek jump via `Shift+Left` / `Shift+Right` (`seek_large_step_sec`).
+- CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--provider`, `--eq-preset`, `--auto-play`.
 - Bilingual UI (`English` / `中文`) with runtime toggle.
 - Custom EQ quick modes (`1`-`6`) including `Engineer`.
 - Queue, search, shuffle, repeat, mono, seek, and volume controls.
@@ -118,6 +126,16 @@ cargo run -- "https://example.com/song.mp3"
 cargo run -- "https://example.com/radio.m3u"
 cargo run -- "https://example.com/radio.pls"
 cargo run -- "https://example.com/podcast/feed.xml"
+
+# yt-dlp / Xiaoyuzhou sources
+cargo run -- "https://www.bilibili.com/video/BV..."
+cargo run -- "https://www.xiaoyuzhoufm.com/episode/..."
+
+# provider / search
+cargo run -- --provider radio
+cargo run -- --provider navidrome
+cargo run -- search "never gonna give you up"
+cargo run -- search-sc "lofi hip hop"
 
 # SoundCloud / YouTube / Bandcamp (requires yt-dlp)
 cargo run -- "https://soundcloud.com/user/sets/playlist"
@@ -216,24 +234,28 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `>` `.` | Next track |
 | `<` `,` | Previous track |
 | `Left` `Right` | Seek -/+5s (local tracks) |
+| `Shift+Left` `Shift+Right` | Large seek step (configurable, local tracks) |
+| `J` | Jump to time |
 | `+` `-` | Volume up/down |
 | `m` | Toggle mono |
 | `g` | Toggle matrix background |
 | `e` | Cycle EQ preset |
 | `t` | Choose theme |
-| `c` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame / Retro / Off) |
+| `c` | Cycle visualizer mode (Neon / Bricks / Columns / Wave / Scatter / Flame / Retro / Matrix / Binary / Snow / Off) |
 | `V` | Toggle full-screen visualizer |
 | `1` `2` `3` `4` `5` `6` | Apply custom EQ mode |
 | `u` | Toggle UI language (EN / ZH) |
 | `i` | Track info / metadata overlay |
 | `y` | Lyrics overlay (synced/manual scroll) |
 | `U` | Load URL at runtime |
+| `f` `F` | Find on YouTube / SoundCloud |
 | `a` | Toggle queue for selected track |
 | `A` | Queue manager |
 | `p` | Playlist manager |
 | `x` | Expand/collapse playlist |
 | `/` | Search playlist |
 | `Tab` | Toggle focus (Playlist / EQ) |
+| `N` | Open provider browser |
 | `Esc` / `b` | Back to provider view (when provider is configured) |
 | `j` `k` / `Up` `Down` | Playlist move / EQ band adjust |
 | `h` `l` | EQ cursor left/right |

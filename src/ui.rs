@@ -4,7 +4,7 @@ use crate::player::Player;
 use crate::playlist::{Playlist, RepeatMode};
 use crate::provider::{PlaylistInfo, Provider};
 use crate::runtime_url;
-use crate::visualizer::Visualizer;
+use crate::visualizer::{Visualizer, VisualizerMode};
 use crate::ytdlp;
 use anyhow::Result;
 use crossterm::cursor;
@@ -287,7 +287,7 @@ struct KeymapEntry {
     action_zh: &'static str,
 }
 
-const KEYMAP_ENTRIES: [KeymapEntry; 32] = [
+const KEYMAP_ENTRIES: [KeymapEntry; 36] = [
     KeymapEntry {
         key: "Space",
         action_en: "Play / Pause",
@@ -312,6 +312,11 @@ const KEYMAP_ENTRIES: [KeymapEntry; 32] = [
         key: "← →",
         action_en: "Seek +/-5s",
         action_zh: "快进/快退 5 秒",
+    },
+    KeymapEntry {
+        key: "Shift+← →",
+        action_en: "Seek large step",
+        action_zh: "大步进快进/快退",
     },
     KeymapEntry {
         key: "+ -",
@@ -389,6 +394,16 @@ const KEYMAP_ENTRIES: [KeymapEntry; 32] = [
         action_zh: "运行时加载 URL",
     },
     KeymapEntry {
+        key: "f / F",
+        action_en: "Find on YouTube / SoundCloud",
+        action_zh: "搜索 YouTube / SoundCloud",
+    },
+    KeymapEntry {
+        key: "J",
+        action_en: "Jump to time",
+        action_zh: "跳转到指定时间",
+    },
+    KeymapEntry {
         key: "S",
         action_en: "Save track to ~/Music",
         action_zh: "保存曲目到 ~/Music",
@@ -424,6 +439,11 @@ const KEYMAP_ENTRIES: [KeymapEntry; 32] = [
         action_zh: "切换焦点",
     },
     KeymapEntry {
+        key: "N",
+        action_en: "Open provider browser",
+        action_zh: "打开服务端浏览器",
+    },
+    KeymapEntry {
         key: "Esc / b",
         action_en: "Back to provider",
         action_zh: "返回服务端播放列表",
@@ -456,6 +476,13 @@ enum FocusArea {
     Playlist,
     Eq,
     Search,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UrlInputMode {
+    Url,
+    YtSearch,
+    ScSearch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -645,12 +672,19 @@ pub struct App {
     lyrics_query: String,
     lyrics_scroll: usize,
     lyrics_loading: bool,
+    lyrics_conveyor_step: usize,
+    lyrics_active_idx: Option<usize>,
+    lyrics_beat_avg: f32,
+    lyrics_beat_cooldown: u8,
     lyrics_cache: HashMap<String, LyricsFetchResult>,
     lyrics_inflight: HashSet<String>,
     lyrics_fetch_tx: mpsc::Sender<(String, LyricsFetchResult)>,
     lyrics_fetch_rx: mpsc::Receiver<(String, LyricsFetchResult)>,
     url_inputting: bool,
+    url_input_mode: UrlInputMode,
     url_input: String,
+    jump_inputting: bool,
+    jump_input: String,
     full_vis: bool,
     show_queue: bool,
     queue_cursor: usize,
@@ -659,6 +693,7 @@ pub struct App {
     save_msg: Option<String>,
     save_msg_ttl: u16,
     auto_play: bool,
+    seek_large_step_sec: u64,
     bg: ParticleBackground,
     bg_enabled: bool,
 }
@@ -667,6 +702,7 @@ impl App {
     pub fn new(player: Player, playlist: Playlist, provider: Option<Box<dyn Provider>>) -> Self {
         let sample_rate = player.output_sample_rate();
         let has_provider = provider.is_some();
+        let has_playlist = playlist.len() > 0;
         let (lyrics_fetch_tx, lyrics_fetch_rx) = mpsc::channel();
 
         let mut app = Self {
@@ -677,7 +713,7 @@ impl App {
             prov_cursor: 0,
             prov_loading: false,
             vis: Visualizer::new(sample_rate),
-            focus: if has_provider {
+            focus: if has_provider && !has_playlist {
                 FocusArea::Provider
             } else {
                 FocusArea::Playlist
@@ -710,12 +746,19 @@ impl App {
             lyrics_query: String::new(),
             lyrics_scroll: 0,
             lyrics_loading: false,
+            lyrics_conveyor_step: 0,
+            lyrics_active_idx: None,
+            lyrics_beat_avg: 0.0,
+            lyrics_beat_cooldown: 0,
             lyrics_cache: HashMap::new(),
             lyrics_inflight: HashSet::new(),
             lyrics_fetch_tx,
             lyrics_fetch_rx,
             url_inputting: false,
+            url_input_mode: UrlInputMode::Url,
             url_input: String::new(),
+            jump_inputting: false,
+            jump_input: String::new(),
             full_vis: false,
             show_queue: false,
             queue_cursor: 0,
@@ -724,6 +767,7 @@ impl App {
             save_msg: None,
             save_msg_ttl: 0,
             auto_play: false,
+            seek_large_step_sec: 30,
             bg: ParticleBackground::new(PANEL_WIDTH, 24),
             bg_enabled: true,
         };
@@ -779,6 +823,25 @@ impl App {
 
     pub fn set_auto_play(&mut self, enabled: bool) {
         self.auto_play = enabled;
+    }
+
+    pub fn set_seek_large_step_sec(&mut self, seconds: u64) {
+        self.seek_large_step_sec = seconds.clamp(1, 600);
+    }
+
+    pub fn set_visualizer_by_name(&mut self, name: &str) -> bool {
+        self.vis.set_mode_by_name(name)
+    }
+
+    fn start_url_input(&mut self, mode: UrlInputMode) {
+        self.url_inputting = true;
+        self.url_input_mode = mode;
+        self.url_input.clear();
+    }
+
+    fn start_jump_input(&mut self) {
+        self.jump_inputting = true;
+        self.jump_input.clear();
     }
 
     fn tr<'a>(&self, en: &'a str, zh: &'a str) -> &'a str {
@@ -974,6 +1037,11 @@ impl App {
             return;
         }
 
+        if self.jump_inputting {
+            self.handle_jump_input_key(key);
+            return;
+        }
+
         if self.url_inputting {
             self.handle_url_input_key(key);
             return;
@@ -1041,7 +1109,8 @@ impl App {
                         self.eq_cursor -= 1;
                     }
                 } else if !self.current_track_is_stream() {
-                    self.player.seek(Duration::from_secs(5), true);
+                    self.player
+                        .seek(self.seek_step_duration(key.modifiers), true);
                 }
             }
             KeyCode::Right => {
@@ -1050,13 +1119,14 @@ impl App {
                         self.eq_cursor += 1;
                     }
                 } else if !self.current_track_is_stream() {
-                    self.player.seek(Duration::from_secs(5), false);
+                    self.player
+                        .seek(self.seek_step_duration(key.modifiers), false);
                 }
             }
             KeyCode::Up => self.up_action(),
             KeyCode::Down => self.down_action(),
-            KeyCode::Char('k') | KeyCode::Char('K') => self.up_action(),
-            KeyCode::Char('j') | KeyCode::Char('J') => self.down_action(),
+            KeyCode::Char('k') => self.up_action(),
+            KeyCode::Char('j') => self.down_action(),
             KeyCode::Enter => {
                 if self.focus == FocusArea::Playlist {
                     self.playlist.set_index(self.pl_cursor);
@@ -1136,10 +1206,9 @@ impl App {
                     self.fetch_lyrics_for_current(false);
                 }
             }
-            KeyCode::Char('U') => {
-                self.url_inputting = true;
-                self.url_input.clear();
-            }
+            KeyCode::Char('U') => self.start_url_input(UrlInputMode::Url),
+            KeyCode::Char('f') => self.start_url_input(UrlInputMode::YtSearch),
+            KeyCode::Char('F') => self.start_url_input(UrlInputMode::ScSearch),
             KeyCode::Char('u') => self.toggle_language(),
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 self.show_themes = true;
@@ -1147,6 +1216,16 @@ impl App {
                 self.theme_cursor = self.theme_idx;
             }
             KeyCode::Char('g') | KeyCode::Char('G') => self.toggle_background(),
+            KeyCode::Char('J') => {
+                if !self.current_track_is_stream() {
+                    self.start_jump_input();
+                }
+            }
+            KeyCode::Char('N') => {
+                if self.provider.is_some() {
+                    self.focus = FocusArea::Provider;
+                }
+            }
             KeyCode::Char('S') => self.save_current_track(),
             KeyCode::Char('/') => self.start_search(),
             _ => {}
@@ -1258,44 +1337,60 @@ impl App {
                     return;
                 }
 
-                self.save_msg = Some(self.tr("Loading URL...", "正在加载 URL...").to_string());
+                let mode = self.url_input_mode;
+                let resolver_input = match mode {
+                    UrlInputMode::Url => input.clone(),
+                    UrlInputMode::YtSearch => format!("ytsearch1:{input}"),
+                    UrlInputMode::ScSearch => format!("scsearch1:{input}"),
+                };
+
+                self.save_msg = Some(
+                    match mode {
+                        UrlInputMode::Url => self.tr("Loading URL...", "正在加载 URL..."),
+                        UrlInputMode::YtSearch => {
+                            self.tr("Searching YouTube...", "正在搜索 YouTube...")
+                        }
+                        UrlInputMode::ScSearch => {
+                            self.tr("Searching SoundCloud...", "正在搜索 SoundCloud...")
+                        }
+                    }
+                    .to_string(),
+                );
                 self.save_msg_ttl = 80;
 
-                match runtime_url::resolve_runtime_url(&input) {
+                match runtime_url::resolve_runtime_url(&resolver_input) {
                     Ok(tracks) if !tracks.is_empty() => {
-                        let was_empty = self.playlist.len() == 0;
-                        let was_playing = self.player.is_playing();
-                        let count = tracks.len();
-                        self.playlist.add(tracks);
-
-                        self.save_msg = Some(if self.lang == UiLang::Zh {
-                            format!("已加载 {count} 首曲目")
-                        } else {
-                            format!("Loaded {count} track(s)")
-                        });
-                        self.save_msg_ttl = 100;
-
-                        if was_empty {
-                            self.focus = FocusArea::Playlist;
-                            self.pl_cursor = 0;
-                            self.pl_scroll = 0;
-                            self.playlist.set_index(0);
-                            self.play_current_track();
-                        } else if !was_playing {
-                            self.play_current_track();
-                        }
+                        self.commit_runtime_tracks(mode, tracks);
                     }
                     Ok(_) => {
                         self.save_msg = Some(
-                            self.tr("No tracks found at URL", "URL 中未发现可播放曲目")
-                                .to_string(),
+                            match mode {
+                                UrlInputMode::Url => {
+                                    self.tr("No tracks found at URL", "URL 中未发现可播放曲目")
+                                }
+                                UrlInputMode::YtSearch => {
+                                    self.tr("No YouTube result found", "未找到 YouTube 结果")
+                                }
+                                UrlInputMode::ScSearch => {
+                                    self.tr("No SoundCloud result found", "未找到 SoundCloud 结果")
+                                }
+                            }
+                            .to_string(),
                         );
                         self.save_msg_ttl = 100;
                     }
                     Err(err) => {
                         self.save_msg = Some(format!(
                             "{}: {err}",
-                            self.tr("URL load failed", "URL 加载失败")
+                            match mode {
+                                UrlInputMode::Url => self.tr("URL load failed", "URL 加载失败"),
+                                UrlInputMode::YtSearch => {
+                                    self.tr("YouTube search failed", "YouTube 搜索失败")
+                                }
+                                UrlInputMode::ScSearch => {
+                                    self.tr("SoundCloud search failed", "SoundCloud 搜索失败")
+                                }
+                            }
                         ));
                         self.save_msg_ttl = 120;
                     }
@@ -1311,6 +1406,137 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn commit_runtime_tracks(&mut self, mode: UrlInputMode, tracks: Vec<crate::playlist::Track>) {
+        let was_empty = self.playlist.len() == 0;
+        let was_playing = self.player.is_playing();
+        let start = self.playlist.len();
+        let count = tracks.len();
+        self.playlist.add(tracks);
+
+        match mode {
+            UrlInputMode::Url => {
+                self.save_msg = Some(if self.lang == UiLang::Zh {
+                    format!("已加载 {count} 首曲目")
+                } else {
+                    format!("Loaded {count} track(s)")
+                });
+                self.save_msg_ttl = 100;
+
+                if was_empty {
+                    self.focus = FocusArea::Playlist;
+                    self.pl_cursor = 0;
+                    self.pl_scroll = 0;
+                    self.playlist.set_index(0);
+                    self.play_current_track();
+                } else if !was_playing {
+                    self.play_current_track();
+                }
+            }
+            UrlInputMode::YtSearch | UrlInputMode::ScSearch => {
+                if was_empty {
+                    self.focus = FocusArea::Playlist;
+                    self.pl_cursor = 0;
+                    self.pl_scroll = 0;
+                    self.playlist.set_index(0);
+                    self.play_current_track();
+                    self.save_msg = Some(
+                        match mode {
+                            UrlInputMode::YtSearch => {
+                                self.tr("Playing YouTube result", "正在播放 YouTube 结果")
+                            }
+                            UrlInputMode::ScSearch => {
+                                self.tr("Playing SoundCloud result", "正在播放 SoundCloud 结果")
+                            }
+                            UrlInputMode::Url => unreachable!(),
+                        }
+                        .to_string(),
+                    );
+                } else {
+                    for idx in start..start + count {
+                        self.playlist.queue(idx);
+                    }
+                    self.player.clear_preload();
+                    self.preload_next();
+                    self.save_msg = Some(
+                        match mode {
+                            UrlInputMode::YtSearch => {
+                                self.tr("Queued YouTube result", "已加入 YouTube 下一首")
+                            }
+                            UrlInputMode::ScSearch => {
+                                self.tr("Queued SoundCloud result", "已加入 SoundCloud 下一首")
+                            }
+                            UrlInputMode::Url => unreachable!(),
+                        }
+                        .to_string(),
+                    );
+                }
+                self.save_msg_ttl = 100;
+            }
+        }
+    }
+
+    fn handle_jump_input_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.jump_inputting = false;
+                self.jump_input.clear();
+            }
+            KeyCode::Enter => {
+                self.jump_inputting = false;
+                let input = self.jump_input.trim().to_string();
+                self.jump_input.clear();
+                if input.is_empty() {
+                    return;
+                }
+
+                match parse_jump_position(&input) {
+                    Ok(target) => self.jump_to_position(target),
+                    Err(err) => {
+                        self.save_msg =
+                            Some(format!("{}: {err}", self.tr("Jump failed", "跳转失败")));
+                        self.save_msg_ttl = 100;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                self.jump_input.pop();
+            }
+            KeyCode::Char(ch) => {
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && (ch.is_ascii_digit() || ch == ':')
+                {
+                    self.jump_input.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn jump_to_position(&mut self, mut target: Duration) {
+        if self.current_track_is_stream() {
+            return;
+        }
+
+        let current = self.player.position();
+        let duration = self.player.duration();
+        if duration > Duration::ZERO {
+            target = target.min(duration);
+        }
+
+        if target >= current {
+            self.player.seek(target - current, false);
+        } else {
+            self.player.seek(current - target, true);
+        }
+
+        self.save_msg = Some(if self.lang == UiLang::Zh {
+            format!("已跳转到 {}", format_duration_mmss(target))
+        } else {
+            format!("Jumped to {}", format_duration_mmss(target))
+        });
+        self.save_msg_ttl = 80;
     }
 
     fn handle_queue_key(&mut self, key: KeyEvent) {
@@ -1404,10 +1630,9 @@ impl App {
                     self.fetch_lyrics_for_current(false);
                 }
             }
-            KeyCode::Char('U') => {
-                self.url_inputting = true;
-                self.url_input.clear();
-            }
+            KeyCode::Char('U') => self.start_url_input(UrlInputMode::Url),
+            KeyCode::Char('f') => self.start_url_input(UrlInputMode::YtSearch),
+            KeyCode::Char('F') => self.start_url_input(UrlInputMode::ScSearch),
             KeyCode::Char('r') | KeyCode::Char('R') => self.reload_provider_playlists(),
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 self.show_themes = true;
@@ -1502,6 +1727,7 @@ impl App {
 
     fn on_tick(&mut self) {
         self.drain_lyrics_prefetch();
+        self.advance_lyrics_conveyor();
 
         if let Some(err) = self.player.take_error() {
             self.error = Some(err);
@@ -1519,6 +1745,7 @@ impl App {
             self.lyrics_query.clear();
             self.lyrics_scroll = 0;
             self.lyrics_loading = false;
+            self.reset_lyrics_conveyor();
             if let Some((track, _)) = self.playlist.current() {
                 self.prefetch_lyrics_for_track(&track);
             }
@@ -1597,6 +1824,7 @@ impl App {
         self.lyrics_query.clear();
         self.lyrics_scroll = 0;
         self.lyrics_loading = false;
+        self.reset_lyrics_conveyor();
 
         if track.ytdlp {
             match ytdlp::resolve_stream_url(&track.path) {
@@ -1679,6 +1907,97 @@ impl App {
             .any(|line| line.start > Duration::ZERO)
     }
 
+    fn reset_lyrics_conveyor(&mut self) {
+        self.lyrics_conveyor_step = 0;
+        self.lyrics_active_idx = None;
+        self.lyrics_beat_avg = 0.0;
+        self.lyrics_beat_cooldown = 0;
+    }
+
+    fn current_active_lyric_index_at(&self, pos: Duration) -> Option<usize> {
+        if self.lyrics_lines.is_empty() || !self.lyrics_have_timestamps() {
+            return None;
+        }
+
+        let mut active_idx = 0usize;
+        for (i, line) in self.lyrics_lines.iter().enumerate() {
+            if line.start <= pos {
+                active_idx = i;
+            } else {
+                break;
+            }
+        }
+        Some(active_idx)
+    }
+
+    fn current_active_lyric_index(&self) -> Option<usize> {
+        self.current_active_lyric_index_at(self.player.position())
+    }
+
+    fn should_step_lyrics_conveyor(&mut self) -> bool {
+        if !(self.player.is_playing() && !self.player.is_paused()) {
+            return false;
+        }
+
+        let samples = self.player.samples(256);
+        if samples.is_empty() {
+            return self.title_off % 7 == 0;
+        }
+
+        let mut peak = 0.0f32;
+        let mut sum = 0.0f32;
+        for sample in &samples {
+            let amp = sample.abs();
+            peak = peak.max(amp);
+            sum += amp;
+        }
+        let avg = sum / samples.len() as f32;
+        let energy = peak.max(avg * 1.7);
+
+        if self.lyrics_beat_avg <= 0.0001 {
+            self.lyrics_beat_avg = energy;
+        } else {
+            self.lyrics_beat_avg = self.lyrics_beat_avg * 0.88 + energy * 0.12;
+        }
+
+        if self.lyrics_beat_cooldown > 0 {
+            self.lyrics_beat_cooldown -= 1;
+        }
+
+        let threshold = (self.lyrics_beat_avg * 1.45).max(0.035);
+        if energy > threshold && self.lyrics_beat_cooldown == 0 {
+            self.lyrics_beat_cooldown = 3;
+            true
+        } else {
+            self.lyrics_beat_cooldown == 0 && self.title_off % 9 == 0
+        }
+    }
+
+    fn advance_lyrics_conveyor(&mut self) {
+        if !self.show_lyrics {
+            return;
+        }
+
+        let Some(active_idx) = self.current_active_lyric_index() else {
+            return;
+        };
+
+        if self.lyrics_active_idx != Some(active_idx) {
+            self.lyrics_active_idx = Some(active_idx);
+            self.lyrics_conveyor_step = 0;
+        }
+
+        let text = self.lyrics_lines[active_idx].text.trim();
+        let glyphs = if text.is_empty() {
+            1
+        } else {
+            text.chars().count().max(1)
+        };
+        if self.should_step_lyrics_conveyor() {
+            self.lyrics_conveyor_step = (self.lyrics_conveyor_step + 1) % (glyphs + 1);
+        }
+    }
+
     fn build_lyrics_query_key(&self, artist: &str, title: &str) -> String {
         format!(
             "{}\n{}",
@@ -1726,10 +2045,12 @@ impl App {
                 Ok(lines) => {
                     self.lyrics_lines = lines;
                     self.lyrics_error = None;
+                    self.reset_lyrics_conveyor();
                 }
                 Err(err) => {
                     self.lyrics_lines.clear();
                     self.lyrics_error = Some(err);
+                    self.reset_lyrics_conveyor();
                 }
             }
         }
@@ -1769,6 +2090,7 @@ impl App {
         self.lyrics_lines.clear();
         self.lyrics_error = None;
         self.lyrics_scroll = 0;
+        self.reset_lyrics_conveyor();
 
         if let Some(cached) = self.lyrics_cache.get(&query).cloned() {
             self.lyrics_loading = false;
@@ -1931,6 +2253,15 @@ impl App {
             .unwrap_or(false)
     }
 
+    fn seek_step_duration(&self, modifiers: KeyModifiers) -> Duration {
+        let secs = if modifiers.contains(KeyModifiers::SHIFT) {
+            self.seek_large_step_sec
+        } else {
+            5
+        };
+        Duration::from_secs(secs)
+    }
+
     fn tick_rate(&self) -> Duration {
         if self.vis.is_disabled() && !self.full_vis {
             Duration::from_millis(TICK_MS_VIS_OFF)
@@ -1954,6 +2285,9 @@ impl App {
         }
         if self.show_info {
             return wrap_frame(self.render_track_info_overlay());
+        }
+        if self.jump_inputting {
+            return wrap_frame(self.render_jump_input_overlay());
         }
         if self.url_inputting {
             return wrap_frame(self.render_url_input_overlay());
@@ -2172,11 +2506,45 @@ impl App {
 
     fn render_url_input_overlay(&self) -> Vec<String> {
         vec![
-            self.tr("L O A D  U R L", "加 载  U R L").to_string(),
+            match self.url_input_mode {
+                UrlInputMode::Url => self.tr("L O A D  U R L", "加 载  U R L"),
+                UrlInputMode::YtSearch => self.tr("Y O U T U B E  F I N D", "搜 索  Y O U T U B E"),
+                UrlInputMode::ScSearch => {
+                    self.tr("S O U N D C L O U D  F I N D", "搜 索  S O U N D C L O U D")
+                }
+            }
+            .to_string(),
             String::new(),
-            format!("  URL: {}_", self.url_input),
+            format!(
+                "  {}: {}_",
+                match self.url_input_mode {
+                    UrlInputMode::Url => "URL",
+                    UrlInputMode::YtSearch | UrlInputMode::ScSearch => {
+                        self.tr("Query", "搜索词")
+                    }
+                },
+                self.url_input
+            ),
             String::new(),
-            self.tr("[Enter]Load [Esc]Cancel", "[Enter]加载 [Esc]取消")
+            match self.url_input_mode {
+                UrlInputMode::Url => self.tr("[Enter]Load [Esc]Cancel", "[Enter]加载 [Esc]取消"),
+                UrlInputMode::YtSearch | UrlInputMode::ScSearch => self.tr(
+                    "[Enter]Queue Next [Esc]Cancel",
+                    "[Enter]加入下一首 [Esc]取消",
+                ),
+            }
+            .to_string(),
+        ]
+    }
+
+    fn render_jump_input_overlay(&self) -> Vec<String> {
+        vec![
+            self.tr("J U M P  T O  T I M E", "跳 转 到 时 间")
+                .to_string(),
+            String::new(),
+            format!("  {}: {}_", self.tr("Time", "时间"), self.jump_input),
+            String::new(),
+            self.tr("[Enter]Jump [Esc]Cancel", "[Enter]跳转 [Esc]取消")
                 .to_string(),
         ]
     }
@@ -2228,15 +2596,7 @@ impl App {
         };
 
         if self.lyrics_have_timestamps() {
-            let pos = self.player.position();
-            let mut active_idx = 0usize;
-            for (i, line) in self.lyrics_lines.iter().enumerate() {
-                if line.start <= pos {
-                    active_idx = i;
-                } else {
-                    break;
-                }
-            }
+            let active_idx = self.current_active_lyric_index().unwrap_or(0);
 
             let mut start = active_idx.saturating_sub(visible / 2);
             if start + visible > self.lyrics_lines.len() {
@@ -2250,7 +2610,7 @@ impl App {
                     self.lyrics_lines[i].text.clone()
                 };
                 if i == active_idx {
-                    let (top, bottom) = self.orbital_lyric_rows(&text);
+                    let (top, bottom) = self.conveyor_lyric_rows(&text);
                     lines.push(top);
                     lines.push(bottom);
                 } else {
@@ -2285,27 +2645,33 @@ impl App {
         lines
     }
 
-    fn orbital_lyric_rows(&self, text: &str) -> (String, String) {
+    fn conveyor_lyric_rows(&self, text: &str) -> (String, String) {
+        let cjk = is_cjk_locale();
+        let glyphs: Vec<char> = if text.trim().is_empty() {
+            vec!['♪']
+        } else {
+            text.chars().collect()
+        };
+
         let mut top = String::from("  ");
         let mut bottom = String::from("  ");
-        let cjk = is_cjk_locale();
-        let phase = self.title_off as f32 * 0.42;
+        let count = glyphs.len().max(1);
+        let step = self.lyrics_conveyor_step % (count + 1);
 
-        let top_shift = ((phase.sin() + 1.0) * 1.5).round() as usize;
-        let bottom_shift = ((phase.cos() + 1.0) * 1.5).round() as usize;
-        top.push_str(&" ".repeat(top_shift));
-        bottom.push_str(&" ".repeat(bottom_shift));
+        let consumed = &glyphs[..step.min(count)];
+        let remaining = &glyphs[step.min(count)..];
 
-        for (idx, ch) in text.chars().enumerate() {
-            let w = char_display_width(ch, cjk).max(1);
-            let theta = phase + idx as f32 * 0.85;
-            if theta.sin() >= 0.0 {
-                top.push(ch);
-                bottom.push_str(&" ".repeat(w));
-            } else {
-                top.push_str(&" ".repeat(w));
-                bottom.push(ch);
-            }
+        for ch in remaining {
+            top.push(*ch);
+        }
+
+        let consumed_width: usize = consumed
+            .iter()
+            .map(|ch| char_display_width(*ch, cjk).max(1))
+            .sum();
+        bottom.push_str(&" ".repeat(consumed_width));
+        for ch in consumed {
+            bottom.push(*ch);
         }
 
         (top, bottom)
@@ -2750,13 +3116,13 @@ impl App {
         if self.focus == FocusArea::Provider {
             return vec![
                 self.tr(
-                    "[↑↓]Navigate [Enter]Load [r]Reload [U]URL [y]Lyrics [i]Info [t]Theme",
-                    "[↑↓]移动 [Enter]加载 [r]重载 [U]URL [y]歌词 [i]信息 [t]主题",
+                    "[↑↓]Navigate [Enter]Load [r]Reload [U]URL [f/F]Find [y]Lyrics [i]Info",
+                    "[↑↓]移动 [Enter]加载 [r]重载 [U]URL [f/F]搜索 [y]歌词 [i]信息",
                 )
                 .to_string(),
                 self.tr(
-                    "[u]Lang [g]BG [A]QMgr [p]PlMgr [Tab]Focus [Q]Quit",
-                    "[u]语言 [g]背景 [A]队列管 [p]列表管 [Tab]焦点 [Q]退出",
+                    "[t]Theme [u]Lang [g]BG [A]QMgr [p]PlMgr [Tab]Focus [N]Browser [Q]Quit",
+                    "[t]主题 [u]语言 [g]背景 [A]队列管 [p]列表管 [Tab]焦点 [N]浏览器 [Q]退出",
                 )
                 .to_string(),
             ];
@@ -2764,7 +3130,7 @@ impl App {
 
         let mut line1 = String::from(self.tr("[Spc]⏯ [<>]Trk ", "[空格]⏯ [<>]曲目 "));
         if !self.current_track_is_stream() {
-            line1.push_str(self.tr("[←→]Seek ", "[←→]快进/退 "));
+            line1.push_str(self.tr("[←→]Seek [J]Jump ", "[←→]快进/退 [J]跳转 "));
         }
         line1.push_str(self.tr(
             "[+-]Vol [m]Mono [e]EQ [c]Vis [V]Full [t]Theme",
@@ -2772,17 +3138,17 @@ impl App {
         ));
 
         let line2 = self.tr(
-            "[y]Lyrics [U]URL [u]Lang [i]Info [g]BG [a]Queue [A]QMgr [p]PlMgr [S]Save",
-            "[y]歌词 [U]URL [u]语言 [i]信息 [g]背景 [a]队列 [A]队列管 [p]列表管 [S]保存",
+            "[y]Lyrics [U]URL [f/F]Find [u]Lang [i]Info [g]BG [a]Queue [A]QMgr",
+            "[y]歌词 [U]URL [f/F]搜索 [u]语言 [i]信息 [g]背景 [a]队列 [A]队列管",
         );
 
         let mut line3 = String::new();
         if self.provider.is_some() {
-            line3.push_str(self.tr("[Esc]Back ", "[Esc]返回 "));
+            line3.push_str(self.tr("[Esc/N]Back ", "[Esc/N]返回 "));
         }
         line3.push_str(self.tr(
-            "[x]Expand [/]Search [Tab]Focus [Q]Quit",
-            "[x]展开 [/]搜索 [Tab]焦点 [Q]退出",
+            "[p]PlMgr [S]Save [x]Expand [/]Search [Tab]Focus [Q]Quit",
+            "[p]列表管 [S]保存 [x]展开 [/]搜索 [Tab]焦点 [Q]退出",
         ));
 
         vec![line1, line2.to_string(), line3]
@@ -2985,7 +3351,7 @@ impl App {
             return paint(ANSI_YELLOW, content);
         }
 
-        if is_spectrum_line(trimmed) {
+        if self.is_spectrum_line(trimmed) {
             return self.colorize_spectrum_line(content);
         }
 
@@ -3022,6 +3388,12 @@ impl App {
         if self.vis.is_retro() {
             return self.colorize_retro_spectrum_line(content);
         }
+        if self.vis.mode() == VisualizerMode::Matrix {
+            return self.colorize_matrix_spectrum_line(content);
+        }
+        if self.vis.mode() == VisualizerMode::Binary {
+            return self.colorize_binary_spectrum_line(content);
+        }
 
         let theme = self.current_theme();
 
@@ -3046,6 +3418,45 @@ impl App {
             }
         }
         out
+    }
+
+    fn colorize_matrix_spectrum_line(&self, content: &str) -> String {
+        let theme = self.current_theme();
+        let mut out = String::new();
+        for ch in content.chars() {
+            match ch {
+                '█' => out.push_str(&paint(theme.spectrum_hi, &ch.to_string())),
+                '·' => out.push_str(&paint(theme.spectrum_mid, &ch.to_string())),
+                ' ' => out.push(' '),
+                _ if is_matrix_rain_char(ch) => {
+                    out.push_str(&paint(theme.spectrum_low, &ch.to_string()))
+                }
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+
+    fn colorize_binary_spectrum_line(&self, content: &str) -> String {
+        let theme = self.current_theme();
+        let mut out = String::new();
+        for ch in content.chars() {
+            match ch {
+                '1' => out.push_str(&paint(theme.spectrum_hi, "1")),
+                '0' => out.push_str(&paint(theme.spectrum_low, "0")),
+                ' ' => out.push(' '),
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+
+    fn is_spectrum_line(&self, trimmed: &str) -> bool {
+        match self.vis.mode() {
+            VisualizerMode::Matrix => is_matrix_visualizer_line(trimmed),
+            VisualizerMode::Binary => is_binary_visualizer_line(trimmed),
+            _ => is_spectrum_line(trimmed),
+        }
     }
 
     fn colorize_retro_spectrum_line(&self, content: &str) -> String {
@@ -3138,7 +3549,7 @@ impl App {
 
         if self.lyrics_have_timestamps() {
             if let Some(active_text) = self.current_active_lyric_text() {
-                let (active_top, active_bottom) = self.orbital_lyric_rows(&active_text);
+                let (active_top, active_bottom) = self.conveyor_lyric_rows(&active_text);
                 if content.trim_end() == active_top.trim_end() {
                     return Some(self.colorize_active_lyric_wave(content, true));
                 }
@@ -3156,19 +3567,7 @@ impl App {
     }
 
     fn current_active_lyric_text(&self) -> Option<String> {
-        if !self.show_lyrics || self.lyrics_lines.is_empty() || !self.lyrics_have_timestamps() {
-            return None;
-        }
-
-        let pos = self.player.position();
-        let mut active_idx = 0usize;
-        for (i, line) in self.lyrics_lines.iter().enumerate() {
-            if line.start <= pos {
-                active_idx = i;
-            } else {
-                break;
-            }
-        }
+        let active_idx = self.current_active_lyric_index()?;
 
         let text = self.lyrics_lines[active_idx].text.trim();
         if text.is_empty() {
@@ -3437,6 +3836,40 @@ fn is_spectrum_line(trimmed: &str) -> bool {
     has_bar
 }
 
+fn is_matrix_visualizer_line(trimmed: &str) -> bool {
+    let mut has_content = false;
+    for ch in trimmed.chars() {
+        if ch == ' ' {
+            continue;
+        }
+        if ch == '█' || ch == '·' || is_matrix_rain_char(ch) {
+            has_content = true;
+            continue;
+        }
+        return false;
+    }
+    has_content
+}
+
+fn is_binary_visualizer_line(trimmed: &str) -> bool {
+    let mut has_content = false;
+    for ch in trimmed.chars() {
+        if ch == ' ' {
+            continue;
+        }
+        if ch == '0' || ch == '1' {
+            has_content = true;
+            continue;
+        }
+        return false;
+    }
+    has_content
+}
+
+fn is_matrix_rain_char(ch: char) -> bool {
+    ch.is_ascii_digit() || ('\u{FF66}'..='\u{FF84}').contains(&ch)
+}
+
 fn is_track_info_kv_line(trimmed: &str) -> bool {
     const LABELS: [&str; 12] = [
         "Title:",
@@ -3564,4 +3997,44 @@ fn truncate_to_width(s: &str, max_width: usize) -> String {
     }
 
     out
+}
+
+fn parse_jump_position(raw: &str) -> std::result::Result<Duration, &'static str> {
+    let parts = raw
+        .split(':')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return Err("empty time");
+    }
+    if parts.len() > 3 {
+        return Err("use SS, MM:SS, or HH:MM:SS");
+    }
+
+    let mut total = 0u64;
+    for part in parts {
+        let value = part
+            .parse::<u64>()
+            .map_err(|_| "time must contain only digits and ':'")?;
+        total = total
+            .checked_mul(60)
+            .and_then(|v| v.checked_add(value))
+            .ok_or("time is too large")?;
+    }
+
+    Ok(Duration::from_secs(total))
+}
+
+fn format_duration_mmss(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    let hours = secs / 3600;
+    let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
+
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    }
 }
