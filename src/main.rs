@@ -15,7 +15,7 @@ use anyhow::{anyhow, Context, Result};
 use glob::glob;
 use navidrome::NavidromeClient;
 use playlist::{is_url, Playlist, Track};
-use provider::Provider;
+use provider::ProviderEntry;
 use radio::RadioProvider;
 use std::collections::BTreeMap;
 use std::fs;
@@ -103,9 +103,9 @@ fn run() -> Result<()> {
         .provider
         .clone()
         .unwrap_or_else(|| cfg.provider.clone());
-    let provider = build_provider(&cfg, &provider_name)?;
+    let (providers, default_provider) = build_providers(&cfg, &provider_name)?;
 
-    if args.is_empty() && provider.is_none() {
+    if args.is_empty() && providers.is_empty() {
         return Err(anyhow!(
             "usage: rliamp <file|folder|url> [...] or configure Navidrome via ~/.config/rliamp/config.toml [navidrome] (or env fallback)\n\nexamples:\n  rliamp song.mp3\n  rliamp ~/Music\n  rliamp ~/radio-stations.m3u\n  rliamp ~/radio-stations.pls\n  rliamp https://example.com/stream.m3u\n  rliamp https://soundcloud.com/user/sets/playlist\n\nprovider config section:\n  [navidrome]\n  url = \"https://navidrome.example.com\"\n  user = \"alice\"\n  password = \"secret\"\n\nprovider env fallback:\n  NAVIDROME_URL NAVIDROME_USER NAVIDROME_PASS (or NAVIDROME_TOKEN)\n\noptional tools:\n  yt-dlp (for SoundCloud/YouTube/Bandcamp URLs)"
         ));
@@ -150,7 +150,7 @@ fn run() -> Result<()> {
     );
     playlist.add(resolved_tracks);
 
-    if playlist.len() == 0 && provider.is_none() {
+    if playlist.len() == 0 && providers.is_empty() {
         return Err(anyhow!("no playable files found"));
     }
 
@@ -185,7 +185,7 @@ fn run() -> Result<()> {
         }
     }
 
-    let mut app = ui::App::new(player, playlist, provider);
+    let mut app = ui::App::new(player, playlist, providers, &default_provider);
     app.set_seek_large_step_sec(cfg.seek_large_step_sec);
     if !eq_preset.is_empty() && !eq_preset.eq_ignore_ascii_case("custom") {
         app.set_eq_preset_by_name(&eq_preset);
@@ -250,24 +250,48 @@ fn parse_cli_args(args: Vec<String>) -> Result<(CliAction, CliOverrides, Vec<Str
     Ok((CliAction::Run, overrides, positional))
 }
 
-fn build_provider(cfg: &config::Config, provider_name: &str) -> Result<Option<Box<dyn Provider>>> {
+fn build_providers(
+    cfg: &config::Config,
+    provider_name: &str,
+) -> Result<(Vec<ProviderEntry>, String)> {
     let normalized = provider_name.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "" | "none" => Ok(None),
-        "radio" => Ok(Some(Box::new(RadioProvider::new()))),
-        "navidrome" => NavidromeClient::from_config(&cfg.navidrome)
-            .or_else(NavidromeClient::from_env)
-            .map(|provider| Box::new(provider) as Box<dyn Provider>)
-            .ok_or_else(|| {
-                anyhow!(
-                    "provider 'navidrome' is selected but no Navidrome config/env credentials were found"
-                )
-            })
-            .map(Some),
-        other => Err(anyhow!(
-            "unsupported provider '{other}' (supported: radio, navidrome)"
-        )),
+    if normalized == "none" {
+        return Ok((Vec::new(), "none".to_string()));
     }
+
+    if !normalized.is_empty() && !matches!(normalized.as_str(), "radio" | "navidrome") {
+        return Err(anyhow!(
+            "unsupported provider '{normalized}' (supported: radio, navidrome, none)"
+        ));
+    }
+
+    let mut providers = vec![ProviderEntry {
+        key: "radio".to_string(),
+        name: "Radio".to_string(),
+        provider: Box::new(RadioProvider::new()),
+    }];
+
+    if let Some(provider) =
+        NavidromeClient::from_config(&cfg.navidrome).or_else(NavidromeClient::from_env)
+    {
+        providers.push(ProviderEntry {
+            key: "navidrome".to_string(),
+            name: "Navidrome".to_string(),
+            provider: Box::new(provider),
+        });
+    } else if normalized == "navidrome" {
+        return Err(anyhow!(
+            "provider 'navidrome' is selected but no Navidrome config/env credentials were found"
+        ));
+    }
+
+    let default_provider = if normalized.is_empty() {
+        cfg.provider.clone()
+    } else {
+        normalized
+    };
+
+    Ok((providers, default_provider))
 }
 
 fn normalize_search_args(args: Vec<String>) -> Result<Vec<String>> {

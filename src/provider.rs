@@ -8,8 +8,13 @@ pub struct PlaylistInfo {
     pub track_count: usize,
 }
 
+pub struct ProviderEntry {
+    pub key: String,
+    pub name: String,
+    pub provider: Box<dyn Provider>,
+}
+
 pub trait Provider {
-    fn name(&self) -> &str;
     fn playlists(&self) -> Result<Vec<PlaylistInfo>>;
     fn tracks(&self, playlist_id: &str) -> Result<Vec<Track>>;
 }

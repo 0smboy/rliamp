@@ -32,6 +32,7 @@ This branch is synced with key upstream updates through **2026-03-06** (includin
 - save local track to `~/Music` (`S`)
 - playlist expand/collapse (`x`)
 - radio provider with custom `~/.config/rliamp/radios.toml` support
+- multi-provider browser with runtime provider switching (`Radio` / `Navidrome`)
 - provider playlist load now replaces current queue before autoplay
 - CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--provider`, `--eq-preset`, `--auto-play`
 - ffmpeg fallback decode when Symphonia fails (including unsupported WAV variants)
@@ -63,6 +64,7 @@ Pending upstream sync priorities (as of **2026-03-03**, upstream `v1.12.3`~`v1.1
 - Bilingual UI (`English` / `中文`) with runtime toggle.
 - Custom EQ quick modes (`1`-`6`) including `Engineer`.
 - Queue, search, shuffle, repeat, mono, seek, and volume controls.
+- Multi-provider browser with `Radio` always available and `Navidrome` when configured.
 - Optional Navidrome playlist loading via config section or environment variables.
 - Unicode-style ANSI-colored terminal UI.
 
@@ -205,7 +207,16 @@ Then run:
 ./target-user/release/rliamp
 ```
 
+## Radio Provider
+
+`Radio` is available by default. Add custom stations by copying:
+
+```bash
+cp radios.toml.example ~/.config/rliamp/radios.toml
+```
+
 Inside provider mode:
+- `Left` / `Right`: switch provider
 - `Up` / `Down`: move playlist selection
 - `Enter`: load selected remote playlist
 - `r`: reload playlists (retry after empty/error)
@@ -256,6 +267,7 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `/` | Search playlist |
 | `Tab` | Toggle focus (Playlist / EQ) |
 | `N` | Open provider browser |
+| `Left` `Right` in provider view | Switch provider |
 | `Esc` / `b` | Back to provider view (when provider is configured) |
 | `j` `k` / `Up` `Down` | Playlist move / EQ band adjust |
 | `h` `l` | EQ cursor left/right |

@@ -2,7 +2,7 @@ use crate::background::ParticleBackground;
 use crate::lyrics::{self, LyricLine, LyricsError};
 use crate::player::Player;
 use crate::playlist::{Playlist, RepeatMode};
-use crate::provider::{PlaylistInfo, Provider};
+use crate::provider::{PlaylistInfo, Provider, ProviderEntry};
 use crate::runtime_url;
 use crate::visualizer::{Visualizer, VisualizerMode};
 use crate::ytdlp;
@@ -638,7 +638,8 @@ const EQ_PRESETS: [EqPreset; 16] = [
 pub struct App {
     player: Player,
     playlist: Playlist,
-    provider: Option<Box<dyn Provider>>,
+    providers: Vec<ProviderEntry>,
+    prov_pill_idx: usize,
     provider_lists: Vec<PlaylistInfo>,
     prov_cursor: usize,
     prov_loading: bool,
@@ -699,16 +700,28 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(player: Player, playlist: Playlist, provider: Option<Box<dyn Provider>>) -> Self {
+    pub fn new(
+        player: Player,
+        playlist: Playlist,
+        providers: Vec<ProviderEntry>,
+        default_provider: &str,
+    ) -> Self {
         let sample_rate = player.output_sample_rate();
-        let has_provider = provider.is_some();
+        let has_provider = !providers.is_empty();
         let has_playlist = playlist.len() > 0;
         let (lyrics_fetch_tx, lyrics_fetch_rx) = mpsc::channel();
+
+        let prov_pill_idx = providers
+            .iter()
+            .position(|entry| entry.key == default_provider)
+            .unwrap_or(0)
+            .min(providers.len().saturating_sub(1));
 
         let mut app = Self {
             player,
             playlist,
-            provider,
+            providers,
+            prov_pill_idx,
             provider_lists: Vec::new(),
             prov_cursor: 0,
             prov_loading: false,
@@ -772,7 +785,7 @@ impl App {
             bg_enabled: true,
         };
 
-        if app.provider.is_some() {
+        if app.current_provider().is_some() {
             app.reload_provider_playlists();
         }
 
@@ -868,6 +881,30 @@ impl App {
         THEMES.get(self.theme_idx).unwrap_or(&THEMES[0])
     }
 
+    fn current_provider(&self) -> Option<&dyn Provider> {
+        self.providers
+            .get(self.prov_pill_idx)
+            .map(|entry| entry.provider.as_ref())
+    }
+
+    fn current_provider_name(&self) -> &str {
+        self.providers
+            .get(self.prov_pill_idx)
+            .map(|entry| entry.name.as_str())
+            .unwrap_or("Provider")
+    }
+
+    fn switch_provider(&mut self, next_idx: usize) {
+        if next_idx >= self.providers.len() || next_idx == self.prov_pill_idx {
+            return;
+        }
+        self.prov_pill_idx = next_idx;
+        self.provider_lists.clear();
+        self.prov_cursor = 0;
+        self.error = None;
+        self.reload_provider_playlists();
+    }
+
     fn apply_eq_preset_hotkey(&mut self, hotkey: char) -> bool {
         for (idx, preset) in EQ_PRESETS.iter().enumerate() {
             if preset.hotkey == Some(hotkey) {
@@ -880,12 +917,13 @@ impl App {
     }
 
     fn reload_provider_playlists(&mut self) {
-        let Some(provider) = self.provider.as_ref() else {
+        if self.prov_pill_idx >= self.providers.len() {
             return;
-        };
+        }
         self.error = None;
         self.prov_loading = true;
-        match provider.playlists() {
+        let result = self.providers[self.prov_pill_idx].provider.playlists();
+        match result {
             Ok(mut lists) => {
                 lists.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                 self.provider_lists = lists;
@@ -902,16 +940,19 @@ impl App {
     }
 
     fn load_provider_tracks(&mut self) {
-        let Some(provider) = self.provider.as_ref() else {
+        if self.prov_pill_idx >= self.providers.len() {
             return;
-        };
+        }
         if self.provider_lists.is_empty() || self.prov_cursor >= self.provider_lists.len() {
             return;
         }
 
         let selected = self.provider_lists[self.prov_cursor].clone();
         self.prov_loading = true;
-        match provider.tracks(&selected.id) {
+        let result = self.providers[self.prov_pill_idx]
+            .provider
+            .tracks(&selected.id);
+        match result {
             Ok(tracks) => {
                 self.player.stop();
                 self.player.clear_preload();
@@ -1086,7 +1127,7 @@ impl App {
             KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('b') | KeyCode::Char('B') => {
                 if self.full_vis {
                     self.full_vis = false;
-                } else if self.provider.is_some() {
+                } else if !self.providers.is_empty() {
                     self.focus = FocusArea::Provider;
                 }
             }
@@ -1222,7 +1263,7 @@ impl App {
                 }
             }
             KeyCode::Char('N') => {
-                if self.provider.is_some() {
+                if !self.providers.is_empty() {
                     self.focus = FocusArea::Provider;
                 }
             }
@@ -1603,6 +1644,16 @@ impl App {
     fn handle_provider_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => self.quit(),
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
+                if self.prov_pill_idx > 0 {
+                    self.switch_provider(self.prov_pill_idx - 1);
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => {
+                if self.prov_pill_idx + 1 < self.providers.len() {
+                    self.switch_provider(self.prov_pill_idx + 1);
+                }
+            }
             KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
                 if self.prov_cursor > 0 {
                     self.prov_cursor -= 1;
@@ -2308,6 +2359,9 @@ impl App {
         lines.extend(self.render_spectrum());
         lines.extend([self.render_seek_bar(), String::new()]);
         lines.extend(self.render_controls());
+        if !self.providers.is_empty() {
+            lines.push(self.render_provider_pills());
+        }
         lines.extend([String::new(), self.render_playlist_header()]);
 
         lines.extend(self.render_playlist());
@@ -2893,11 +2947,7 @@ impl App {
 
     fn render_playlist_header(&self) -> String {
         if self.focus == FocusArea::Provider {
-            let provider_name = self
-                .provider
-                .as_ref()
-                .map(|p| p.name())
-                .unwrap_or("Provider");
+            let provider_name = self.current_provider_name();
             return if self.lang == UiLang::Zh {
                 format!("── {provider_name} 播放列表 ──")
             } else {
@@ -2947,11 +2997,7 @@ impl App {
     fn render_playlist(&self) -> Vec<String> {
         if self.focus == FocusArea::Provider {
             if self.prov_loading {
-                let provider_name = self
-                    .provider
-                    .as_ref()
-                    .map(|p| p.name())
-                    .unwrap_or("provider");
+                let provider_name = self.current_provider_name();
                 return vec![if self.lang == UiLang::Zh {
                     format!("  正在加载 {provider_name}...")
                 } else {
@@ -3116,13 +3162,18 @@ impl App {
         if self.focus == FocusArea::Provider {
             return vec![
                 self.tr(
-                    "[↑↓]Navigate [Enter]Load [r]Reload [U]URL [f/F]Find [y]Lyrics [i]Info",
-                    "[↑↓]移动 [Enter]加载 [r]重载 [U]URL [f/F]搜索 [y]歌词 [i]信息",
+                    "[←→]Provider [↑↓]Navigate [Enter]Load [r]Reload [U]URL [f/F]Find",
+                    "[←→]切服务端 [↑↓]移动 [Enter]加载 [r]重载 [U]URL [f/F]搜索",
                 )
                 .to_string(),
                 self.tr(
-                    "[t]Theme [u]Lang [g]BG [A]QMgr [p]PlMgr [Tab]Focus [N]Browser [Q]Quit",
-                    "[t]主题 [u]语言 [g]背景 [A]队列管 [p]列表管 [Tab]焦点 [N]浏览器 [Q]退出",
+                    "[y]Lyrics [i]Info [t]Theme [u]Lang [g]BG [A]QMgr [p]PlMgr",
+                    "[y]歌词 [i]信息 [t]主题 [u]语言 [g]背景 [A]队列管 [p]列表管",
+                )
+                .to_string(),
+                self.tr(
+                    "[Tab]Focus [N]Browser [Q]Quit",
+                    "[Tab]焦点 [N]浏览器 [Q]退出",
                 )
                 .to_string(),
             ];
@@ -3143,7 +3194,7 @@ impl App {
         );
 
         let mut line3 = String::new();
-        if self.provider.is_some() {
+        if !self.providers.is_empty() {
             line3.push_str(self.tr("[Esc/N]Back ", "[Esc/N]返回 "));
         }
         line3.push_str(self.tr(
@@ -3152,6 +3203,27 @@ impl App {
         ));
 
         vec![line1, line2.to_string(), line3]
+    }
+
+    fn render_provider_pills(&self) -> String {
+        if self.providers.is_empty() {
+            return String::new();
+        }
+
+        let mut parts = Vec::with_capacity(self.providers.len());
+        for (idx, provider) in self.providers.iter().enumerate() {
+            if idx == self.prov_pill_idx {
+                parts.push(format!("[{}]", provider.name));
+            } else {
+                parts.push(provider.name.clone());
+            }
+        }
+
+        if self.lang == UiLang::Zh {
+            format!("服务端: {}", parts.join(" · "))
+        } else {
+            format!("Providers: {}", parts.join(" · "))
+        }
     }
 
     fn colorize_frame(&self, frame: &str) -> String {

@@ -204,10 +204,6 @@ fn check_subsonic_error(payload: &serde_json::Value, endpoint: &str) -> Result<(
 }
 
 impl Provider for NavidromeClient {
-    fn name(&self) -> &str {
-        "Navidrome"
-    }
-
     fn playlists(&self) -> Result<Vec<PlaylistInfo>> {
         let parsed: GetPlaylistsResponse = self.get_json("getPlaylists", &[])?;
         let mut out = Vec::new();
