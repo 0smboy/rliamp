@@ -5,7 +5,7 @@ RLIAMP is a Rust rewrite of [cliamp](https://github.com/bjarneo/cliamp): a retro
 
 ## Upstream Sync Status
 
-This branch is synced with key upstream updates through **2026-03-06** (including upstream `78ce31d`) for:
+This branch is synced with key upstream updates through **2026-03-19** (including recent upstream `v1.21.x` UX/stability work that is practical in the Rust branch) for:
 
 - recursive folder scanning
 - wider/centered UI refresh
@@ -28,13 +28,21 @@ This branch is synced with key upstream updates through **2026-03-06** (includin
 - runtime URL load overlay (`U`) for direct stream/M3U/PLS/feed links
 - runtime YouTube / SoundCloud find (`f` / `F`) with queue-next behavior
 - jump to time (`J`)
+- file browser overlay (`o`) with local folder drill-down, multi-select, and replace mode
 - queue manager (`A`) and playlist manager (`p`)
 - save local track to `~/Music` (`S`)
 - playlist expand/collapse (`x`)
+- auto-sized playlist window (default cap `12`, expanded cap `24`)
+- compact mode (`--compact` / `compact = true`)
+- resume playback for local tracks across restarts
 - radio provider with custom `~/.config/rliamp/radios.toml` support
-- multi-provider browser with runtime provider switching (`Radio` / `Navidrome`)
+- multi-provider browser with runtime provider switching (`Radio` / `Navidrome` / `YouTube` / `YouTube Music`)
+- auth-capable provider flow for YouTube / YouTube Music with cached credentials
 - provider playlist load now replaces current queue before autoplay
-- CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--provider`, `--eq-preset`, `--auto-play`
+- async yt-dlp URL resolution with timeout protection and loading elapsed status
+- live/realtime stream unpause now reconnects instead of resuming stale buffered audio
+- CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--visualizer`, `--compact`, `--provider`, `--eq-preset`, `--sample-rate`, `--buffer-ms`, `--resample-quality`, `--bit-depth`, `--auto-play`
+- audio output tuning: preferred sample rate, buffer size, resample quality, and FFmpeg PCM bit depth
 - ffmpeg fallback decode when Symphonia fails (including unsupported WAV variants)
 - Navidrome provider integration (`[navidrome]` config section + env fallback)
 
@@ -52,6 +60,7 @@ Pending upstream sync priorities (as of **2026-03-03**, upstream `v1.12.3`~`v1.1
 - Real-time 10-band spectrum visualization with eleven modes (`Neon`, `Bricks`, `Columns`, `Wave`, `Scatter`, `Flame`, `Retro`, `Matrix`, `Binary`, `Snow`, `Off`).
 - Full-screen visualizer mode (`V`), plus interactive keymap/theme/info overlays.
 - Lyrics overlay (`y`) with auto-follow for timestamped lyrics.
+- File browser overlay (`o`) with recursive local file/folder import.
 - Runtime URL input (`U`) to load stream/playlist/feed links without restart.
 - Runtime YouTube / SoundCloud find (`f` / `F`) with queue-next behavior.
 - Jump to time (`J`) for local tracks.
@@ -60,11 +69,15 @@ Pending upstream sync priorities (as of **2026-03-03**, upstream `v1.12.3`~`v1.1
 - Save current local track to `~/Music` (`S`).
 - 10-band parametric EQ with built-in presets.
 - Configurable large seek jump via `Shift+Left` / `Shift+Right` (`seek_large_step_sec`).
-- CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--provider`, `--eq-preset`, `--auto-play`.
+- Compact mode (`--compact`) caps the main player frame at 80 columns.
+- Playlist height auto-fits the terminal (default cap `12`, expanded cap `24` with `x`).
+- Local-track resume playback is restored automatically on next launch.
+- CLI flags: `--help`, `--version`, `--volume`, `--shuffle`, `--repeat`, `--mono/--no-mono`, `--theme`, `--visualizer`, `--compact`, `--provider`, `--eq-preset`, `--sample-rate`, `--buffer-ms`, `--resample-quality`, `--bit-depth`, `--auto-play`.
 - Bilingual UI (`English` / `中文`) with runtime toggle.
 - Custom EQ quick modes (`1`-`6`) including `Engineer`.
 - Queue, search, shuffle, repeat, mono, seek, and volume controls.
-- Multi-provider browser with `Radio` always available and `Navidrome` when configured.
+- Multi-provider browser with `Radio` always available plus optional `Navidrome`, `YouTube`, and `YouTube Music`.
+- YouTube / YouTube Music provider browser with OAuth sign-in and playlist classification cache.
 - Optional Navidrome playlist loading via config section or environment variables.
 - Unicode-style ANSI-colored terminal UI.
 
@@ -115,6 +128,8 @@ cargo run -- /path/to/*.mp3
 cargo run -- --auto-play --shuffle --volume -5 /path/to/Music
 cargo run -- --theme Amber --eq-preset "Rock" /path/to/Music
 cargo run -- --theme tokyo-night /path/to/Music
+cargo run -- --visualizer Matrix --sample-rate 48000 --buffer-ms 120 /path/to/Music
+cargo run -- --compact --auto-play /path/to/Music
 
 # recursive directory scan
 cargo run -- /path/to/Music
@@ -136,6 +151,8 @@ cargo run -- "https://www.xiaoyuzhoufm.com/episode/..."
 # provider / search
 cargo run -- --provider radio
 cargo run -- --provider navidrome
+cargo run -- --provider youtube
+cargo run -- --provider ytmusic
 cargo run -- search "never gonna give you up"
 cargo run -- search-sc "lofi hip hop"
 
@@ -181,6 +198,64 @@ cp config.toml.example ~/.config/rliamp/config.toml
 ## Navidrome
 
 Configure provider mode with either `~/.config/rliamp/config.toml` or env vars.
+
+Audio quality knobs can be set in `~/.config/rliamp/config.toml`:
+
+```toml
+sample_rate = 48000
+buffer_ms = 120
+resample_quality = 4
+bit_depth = 32
+compact = true
+```
+
+Notes:
+- `sample_rate` asks `cpal` for the closest supported output rate on the active device.
+- `buffer_ms` requests a fixed speaker buffer when the device reports a supported range.
+- `resample_quality` maps to `1=Nearest`, `2=Linear`, `3=Cubic`, `4=Lanczos`.
+- `bit_depth` affects FFmpeg-decoded inputs and streams (`16` or `32`).
+
+## YouTube / YouTube Music
+
+Configure provider mode with either `~/.config/rliamp/config.toml` or env vars:
+
+```toml
+[ytmusic]
+client_id = "google-oauth-desktop-client-id"
+client_secret = "google-oauth-desktop-client-secret"
+# cookies_from = "chrome"   # optional, for private/uploaded tracks via yt-dlp
+```
+
+Environment fallback:
+
+```bash
+export YTMUSIC_CLIENT_ID="google-oauth-desktop-client-id"
+export YTMUSIC_CLIENT_SECRET="google-oauth-desktop-client-secret"
+# export YTMUSIC_COOKIES_FROM="chrome"
+```
+
+Notes:
+- Enable `YouTube Data API v3` in your Google Cloud project.
+- OAuth callback must allow `http://127.0.0.1:19873/callback`.
+- First open of the provider will ask you to sign in in the browser.
+- Library playlists are split into `YouTube Music` and `YouTube` by cached category classification.
+
+## Spotify (Experimental)
+
+Spotify support is intentionally not part of the default build.
+
+Reasons:
+- it requires rebuilding with `--features spotify-experimental`
+- Spotify's current platform policy blocks this path without Spotify Premium
+- Spotify local callback URIs must use `127.0.0.1`, not `localhost`
+
+If you explicitly want to experiment with it anyway:
+
+```bash
+SPOTIFY_CLIENT_ID="spotify-app-client-id" \
+SPOTIFY_REDIRECT_URI="http://127.0.0.1:8888/callback" \
+cargo run --features spotify-experimental -- --provider spotify
+```
 
 Config file (takes precedence):
 
@@ -247,6 +322,7 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `Left` `Right` | Seek -/+5s (local tracks) |
 | `Shift+Left` `Shift+Right` | Large seek step (configurable, local tracks) |
 | `J` | Jump to time |
+| `o` | Open file browser |
 | `+` `-` | Volume up/down |
 | `m` | Toggle mono |
 | `g` | Toggle matrix background |
@@ -268,6 +344,7 @@ Press `1`-`6` at runtime to apply the custom profiles:
 | `Tab` | Toggle focus (Playlist / EQ) |
 | `N` | Open provider browser |
 | `Left` `Right` in provider view | Switch provider |
+| `Enter` in auth-needed provider view | Sign in and reload playlists |
 | `Esc` / `b` | Back to provider view (when provider is configured) |
 | `j` `k` / `Up` `Down` | Playlist move / EQ band adjust |
 | `h` `l` | EQ cursor left/right |

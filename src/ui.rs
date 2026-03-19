@@ -1,11 +1,11 @@
 use crate::background::ParticleBackground;
+use crate::local_source;
 use crate::lyrics::{self, LyricLine, LyricsError};
 use crate::player::Player;
 use crate::playlist::{Playlist, RepeatMode};
-use crate::provider::{PlaylistInfo, Provider, ProviderEntry};
+use crate::provider::{is_needs_auth, PlaylistInfo, Provider, ProviderEntry};
 use crate::runtime_url;
 use crate::visualizer::{Visualizer, VisualizerMode};
-use crate::ytdlp;
 use anyhow::Result;
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -16,12 +16,13 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const PANEL_WIDTH: usize = 92;
+const COMPACT_PANEL_WIDTH: usize = 80;
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BORDER: &str = "\x1b[90m";
@@ -40,7 +41,8 @@ const ANSI_RETRO_SUN: &str = "\x1b[38;5;222m";
 const ANSI_RETRO_WAVE: &str = "\x1b[38;5;203m";
 
 const DEFAULT_VIS_ROWS: usize = 4;
-const EXPANDED_VIS_ROWS: usize = 20;
+const MAX_PL_VISIBLE: usize = 12;
+const MAX_PL_EXPAND_VISIBLE: usize = 24;
 const TICK_MS_ACTIVE: u64 = 50;
 const TICK_MS_VIS_OFF: u64 = 200;
 
@@ -287,7 +289,7 @@ struct KeymapEntry {
     action_zh: &'static str,
 }
 
-const KEYMAP_ENTRIES: [KeymapEntry; 36] = [
+const KEYMAP_ENTRIES: [KeymapEntry; 37] = [
     KeymapEntry {
         key: "Space",
         action_en: "Play / Pause",
@@ -404,6 +406,11 @@ const KEYMAP_ENTRIES: [KeymapEntry; 36] = [
         action_zh: "跳转到指定时间",
     },
     KeymapEntry {
+        key: "o",
+        action_en: "Open file browser",
+        action_zh: "打开文件浏览器",
+    },
+    KeymapEntry {
         key: "S",
         action_en: "Save track to ~/Music",
         action_zh: "保存曲目到 ~/Music",
@@ -518,6 +525,16 @@ struct EqPreset {
     name_zh: &'static str,
     hotkey: Option<char>,
     bands: [f32; 10],
+}
+
+#[derive(Debug, Clone)]
+struct FileBrowserEntry {
+    name: String,
+    path: PathBuf,
+    is_dir: bool,
+    is_selectable: bool,
+    is_playlist: bool,
+    is_parent: bool,
 }
 
 const EQ_PRESETS: [EqPreset; 16] = [
@@ -643,6 +660,7 @@ pub struct App {
     provider_lists: Vec<PlaylistInfo>,
     prov_cursor: usize,
     prov_loading: bool,
+    prov_needs_auth: bool,
     vis: Visualizer,
     focus: FocusArea,
     eq_cursor: usize,
@@ -650,6 +668,7 @@ pub struct App {
     pl_cursor: usize,
     pl_scroll: usize,
     pl_visible: usize,
+    pl_expanded: bool,
     title_off: usize,
     lang: UiLang,
     error: Option<String>,
@@ -686,6 +705,12 @@ pub struct App {
     url_input: String,
     jump_inputting: bool,
     jump_input: String,
+    show_file_browser: bool,
+    fb_dir: PathBuf,
+    fb_entries: Vec<FileBrowserEntry>,
+    fb_cursor: usize,
+    fb_selected: HashSet<PathBuf>,
+    fb_err: Option<String>,
     full_vis: bool,
     show_queue: bool,
     queue_cursor: usize,
@@ -694,7 +719,11 @@ pub struct App {
     save_msg: Option<String>,
     save_msg_ttl: u16,
     auto_play: bool,
+    compact_mode: bool,
     seek_large_step_sec: u64,
+    resume_path: Option<String>,
+    resume_secs: u64,
+    exit_resume: Option<(String, u64)>,
     bg: ParticleBackground,
     bg_enabled: bool,
 }
@@ -725,6 +754,7 @@ impl App {
             provider_lists: Vec::new(),
             prov_cursor: 0,
             prov_loading: false,
+            prov_needs_auth: false,
             vis: Visualizer::new(sample_rate),
             focus: if has_provider && !has_playlist {
                 FocusArea::Provider
@@ -735,7 +765,8 @@ impl App {
             eq_preset_idx: None,
             pl_cursor: 0,
             pl_scroll: 0,
-            pl_visible: 5,
+            pl_visible: MAX_PL_VISIBLE,
+            pl_expanded: false,
             title_off: 0,
             lang: UiLang::detect(),
             error: None,
@@ -772,6 +803,12 @@ impl App {
             url_input: String::new(),
             jump_inputting: false,
             jump_input: String::new(),
+            show_file_browser: false,
+            fb_dir: PathBuf::new(),
+            fb_entries: Vec::new(),
+            fb_cursor: 0,
+            fb_selected: HashSet::new(),
+            fb_err: None,
             full_vis: false,
             show_queue: false,
             queue_cursor: 0,
@@ -780,7 +817,11 @@ impl App {
             save_msg: None,
             save_msg_ttl: 0,
             auto_play: false,
+            compact_mode: false,
             seek_large_step_sec: 30,
+            resume_path: None,
+            resume_secs: 0,
+            exit_resume: None,
             bg: ParticleBackground::new(PANEL_WIDTH, 24),
             bg_enabled: true,
         };
@@ -838,6 +879,25 @@ impl App {
         self.auto_play = enabled;
     }
 
+    pub fn set_resume_state(&mut self, path: String, secs: u64) {
+        if path.trim().is_empty() || secs == 0 {
+            self.resume_path = None;
+            self.resume_secs = 0;
+            return;
+        }
+        self.resume_path = Some(path);
+        self.resume_secs = secs;
+    }
+
+    pub fn resume_state(&self) -> Option<(String, u64)> {
+        self.exit_resume.clone()
+    }
+
+    pub fn set_compact_mode(&mut self, enabled: bool) {
+        self.compact_mode = enabled;
+        self.refresh_playlist_visible();
+    }
+
     pub fn set_seek_large_step_sec(&mut self, seconds: u64) {
         self.seek_large_step_sec = seconds.clamp(1, 600);
     }
@@ -857,11 +917,106 @@ impl App {
         self.jump_input.clear();
     }
 
+    fn open_file_browser(&mut self) {
+        if self.fb_dir.as_os_str().is_empty() {
+            self.fb_dir = env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/"));
+        }
+        self.fb_cursor = 0;
+        self.fb_selected.clear();
+        self.fb_err = None;
+        self.load_file_browser_dir();
+        self.show_file_browser = true;
+    }
+
+    fn load_file_browser_dir(&mut self) {
+        self.fb_entries.clear();
+        self.fb_err = None;
+
+        let current_dir = if self.fb_dir.as_os_str().is_empty() {
+            PathBuf::from("/")
+        } else {
+            self.fb_dir.clone()
+        };
+        self.fb_dir = current_dir.clone();
+
+        let parent = current_dir.parent().unwrap_or(current_dir.as_path());
+        self.fb_entries.push(FileBrowserEntry {
+            name: "..".to_string(),
+            path: parent.to_path_buf(),
+            is_dir: true,
+            is_selectable: false,
+            is_playlist: false,
+            is_parent: true,
+        });
+
+        let read_dir = match fs::read_dir(&current_dir) {
+            Ok(entries) => entries,
+            Err(err) => {
+                self.fb_err = Some(err.to_string());
+                self.fb_cursor = 0;
+                return;
+            }
+        };
+
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|part| part.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                dirs.push(FileBrowserEntry {
+                    name: format!("{name}/"),
+                    path,
+                    is_dir: true,
+                    is_selectable: true,
+                    is_playlist: false,
+                    is_parent: false,
+                });
+                continue;
+            }
+
+            let is_playlist = is_browser_playlist_path(&path);
+            files.push(FileBrowserEntry {
+                name: name.to_string(),
+                is_selectable: local_source::is_browser_selectable_path(&path),
+                is_playlist,
+                is_dir: false,
+                is_parent: false,
+                path,
+            });
+        }
+
+        dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        self.fb_entries.extend(dirs);
+        self.fb_entries.extend(files);
+        self.fb_cursor = self.fb_cursor.min(self.fb_entries.len().saturating_sub(1));
+    }
+
     fn tr<'a>(&self, en: &'a str, zh: &'a str) -> &'a str {
         if self.lang == UiLang::Zh {
             zh
         } else {
             en
+        }
+    }
+
+    fn panel_width(&self) -> usize {
+        if self.compact_mode {
+            COMPACT_PANEL_WIDTH
+        } else {
+            PANEL_WIDTH
         }
     }
 
@@ -901,6 +1056,7 @@ impl App {
         self.prov_pill_idx = next_idx;
         self.provider_lists.clear();
         self.prov_cursor = 0;
+        self.prov_needs_auth = false;
         self.error = None;
         self.reload_provider_playlists();
     }
@@ -922,6 +1078,7 @@ impl App {
         }
         self.error = None;
         self.prov_loading = true;
+        self.prov_needs_auth = false;
         let result = self.providers[self.prov_pill_idx].provider.playlists();
         match result {
             Ok(mut lists) => {
@@ -933,7 +1090,13 @@ impl App {
                 self.error = None;
             }
             Err(err) => {
-                self.error = Some(err.to_string());
+                self.provider_lists.clear();
+                self.prov_needs_auth = is_needs_auth(&err);
+                if self.prov_needs_auth {
+                    self.error = None;
+                } else {
+                    self.error = Some(err.to_string());
+                }
             }
         }
         self.prov_loading = false;
@@ -941,6 +1104,10 @@ impl App {
 
     fn load_provider_tracks(&mut self) {
         if self.prov_pill_idx >= self.providers.len() {
+            return;
+        }
+        if self.prov_needs_auth {
+            self.authenticate_current_provider();
             return;
         }
         if self.provider_lists.is_empty() || self.prov_cursor >= self.provider_lists.len() {
@@ -967,10 +1134,35 @@ impl App {
                 self.error = None;
             }
             Err(err) => {
-                self.error = Some(err.to_string());
+                if is_needs_auth(&err) {
+                    self.prov_needs_auth = true;
+                    self.error = None;
+                } else {
+                    self.error = Some(err.to_string());
+                }
             }
         }
         self.prov_loading = false;
+    }
+
+    fn authenticate_current_provider(&mut self) {
+        if self.prov_pill_idx >= self.providers.len() {
+            return;
+        }
+
+        self.prov_loading = true;
+        let result = self.providers[self.prov_pill_idx].provider.authenticate();
+        self.prov_loading = false;
+        match result {
+            Ok(()) => {
+                self.prov_needs_auth = false;
+                self.error = None;
+                self.reload_provider_playlists();
+            }
+            Err(err) => {
+                self.error = Some(err.to_string());
+            }
+        }
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -1024,6 +1216,7 @@ impl App {
     }
 
     fn draw(&mut self, stdout: &mut io::Stdout) -> Result<()> {
+        self.refresh_playlist_visible();
         let frame_plain = self.render();
         let scene = if let Ok((w, h)) = terminal::size() {
             let term_w = w as usize;
@@ -1083,6 +1276,11 @@ impl App {
             return;
         }
 
+        if self.show_file_browser {
+            self.handle_file_browser_key(key);
+            return;
+        }
+
         if self.url_inputting {
             self.handle_url_input_key(key);
             return;
@@ -1132,14 +1330,7 @@ impl App {
                 }
             }
             KeyCode::Char(' ') => {
-                if self.player.is_loading() {
-                    return;
-                }
-                if !self.player.is_playing() {
-                    self.play_current_track();
-                } else {
-                    self.player.toggle_pause();
-                }
+                self.toggle_play_pause();
             }
             KeyCode::Char('s') => self.player.stop(),
             KeyCode::Char('>') | KeyCode::Char('.') => self.next_track(),
@@ -1149,7 +1340,7 @@ impl App {
                     if self.eq_cursor > 0 {
                         self.eq_cursor -= 1;
                     }
-                } else if !self.current_track_is_stream() {
+                } else if self.current_track_can_seek() {
                     self.player
                         .seek(self.seek_step_duration(key.modifiers), true);
                 }
@@ -1159,7 +1350,7 @@ impl App {
                     if self.eq_cursor < 9 {
                         self.eq_cursor += 1;
                     }
-                } else if !self.current_track_is_stream() {
+                } else if self.current_track_can_seek() {
                     self.player
                         .seek(self.seek_step_duration(key.modifiers), false);
                 }
@@ -1193,11 +1384,8 @@ impl App {
                 self.preload_next();
             }
             KeyCode::Char('x') | KeyCode::Char('X') => {
-                self.pl_visible = if self.pl_visible == 5 {
-                    EXPANDED_VIS_ROWS
-                } else {
-                    5
-                };
+                self.pl_expanded = !self.pl_expanded;
+                self.refresh_playlist_visible();
                 self.adjust_scroll();
             }
             KeyCode::Tab => {
@@ -1258,10 +1446,11 @@ impl App {
             }
             KeyCode::Char('g') | KeyCode::Char('G') => self.toggle_background(),
             KeyCode::Char('J') => {
-                if !self.current_track_is_stream() {
+                if self.current_track_can_seek() {
                     self.start_jump_input();
                 }
             }
+            KeyCode::Char('o') | KeyCode::Char('O') => self.open_file_browser(),
             KeyCode::Char('N') => {
                 if !self.providers.is_empty() {
                     self.focus = FocusArea::Provider;
@@ -1555,13 +1744,168 @@ impl App {
         }
     }
 
+    fn handle_file_browser_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.quit()
+            }
+            KeyCode::Esc | KeyCode::Char('o') | KeyCode::Char('O') => {
+                self.show_file_browser = false;
+                self.fb_err = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
+                if self.fb_cursor > 0 {
+                    self.fb_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
+                if self.fb_cursor + 1 < self.fb_entries.len() {
+                    self.fb_cursor += 1;
+                }
+            }
+            KeyCode::Char('g') => self.fb_cursor = 0,
+            KeyCode::Char('G') => {
+                if !self.fb_entries.is_empty() {
+                    self.fb_cursor = self.fb_entries.len() - 1;
+                }
+            }
+            KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
+                let next_dir = self
+                    .fb_dir
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| self.fb_dir.clone());
+                self.fb_dir = next_dir;
+                self.load_file_browser_dir();
+            }
+            KeyCode::Char(' ') => {
+                if let Some(entry) = self.fb_entries.get(self.fb_cursor).cloned() {
+                    if !entry.is_parent && (entry.is_dir || entry.is_selectable) {
+                        if self.fb_selected.contains(&entry.path) {
+                            self.fb_selected.remove(&entry.path);
+                        } else {
+                            self.fb_selected.insert(entry.path);
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('a') => self.toggle_file_browser_select_all(),
+            KeyCode::Char('R') => self.confirm_file_browser_selection(true),
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('L') => {
+                self.confirm_file_browser_selection(false)
+            }
+            _ => {}
+        }
+    }
+
+    fn toggle_file_browser_select_all(&mut self) {
+        let selectable_paths = self
+            .fb_entries
+            .iter()
+            .filter(|entry| entry.is_selectable && !entry.is_dir)
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        if selectable_paths.is_empty() {
+            return;
+        }
+
+        let all_selected = selectable_paths
+            .iter()
+            .all(|path| self.fb_selected.contains(path));
+        for path in selectable_paths {
+            if all_selected {
+                self.fb_selected.remove(&path);
+            } else {
+                self.fb_selected.insert(path);
+            }
+        }
+    }
+
+    fn confirm_file_browser_selection(&mut self, replace: bool) {
+        let Some(entry) = self.fb_entries.get(self.fb_cursor).cloned() else {
+            return;
+        };
+
+        if self.fb_selected.is_empty() {
+            if entry.is_dir {
+                self.fb_dir = entry.path;
+                self.load_file_browser_dir();
+                return;
+            }
+            if entry.is_selectable {
+                self.fb_selected.insert(entry.path);
+            } else {
+                return;
+            }
+        }
+
+        let mut selected = self.fb_selected.iter().cloned().collect::<Vec<_>>();
+        selected.sort();
+        match local_source::resolve_paths_to_tracks(&selected) {
+            Ok(tracks) => self.commit_file_browser_tracks(tracks, replace),
+            Err(err) => self.fb_err = Some(err.to_string()),
+        }
+    }
+
+    fn commit_file_browser_tracks(&mut self, tracks: Vec<crate::playlist::Track>, replace: bool) {
+        if tracks.is_empty() {
+            self.fb_err = Some(
+                self.tr("No playable files found", "未找到可播放文件")
+                    .to_string(),
+            );
+            return;
+        }
+
+        let was_empty = self.playlist.len() == 0;
+        let was_playing = self.player.is_playing();
+        let added_count = tracks.len();
+        let start = self.playlist.len();
+
+        self.show_file_browser = false;
+        self.fb_selected.clear();
+        self.fb_err = None;
+        self.focus = FocusArea::Playlist;
+
+        if replace {
+            self.playlist.replace(tracks);
+            self.pl_cursor = 0;
+            self.pl_scroll = 0;
+            self.playlist.set_index(0);
+            self.play_current_track();
+            self.save_msg = Some(if self.lang == UiLang::Zh {
+                format!("已替换为 {added_count} 首曲目")
+            } else {
+                format!("Replaced playlist with {added_count} track(s)")
+            });
+        } else {
+            self.playlist.add(tracks);
+            self.pl_cursor = start.min(self.playlist.len().saturating_sub(1));
+            self.adjust_scroll();
+            if was_empty || !was_playing {
+                self.playlist.set_index(self.pl_cursor);
+                self.play_current_track();
+            } else {
+                self.player.clear_preload();
+                self.preload_next();
+            }
+            self.save_msg = Some(if self.lang == UiLang::Zh {
+                format!("已加入 {added_count} 首曲目")
+            } else {
+                format!("Added {added_count} track(s)")
+            });
+        }
+        self.save_msg_ttl = 100;
+    }
+
     fn jump_to_position(&mut self, mut target: Duration) {
-        if self.current_track_is_stream() {
+        if !self.current_track_can_seek() {
             return;
         }
 
         let current = self.player.position();
-        let duration = self.player.duration();
+        let duration = self.current_track_total_duration();
         if duration > Duration::ZERO {
             target = target.min(duration);
         }
@@ -1665,14 +2009,7 @@ impl App {
                 }
             }
             KeyCode::Char(' ') => {
-                if self.player.is_loading() {
-                    return;
-                }
-                if !self.player.is_playing() {
-                    self.play_current_track();
-                } else {
-                    self.player.toggle_pause();
-                }
+                self.toggle_play_pause();
             }
             KeyCode::Char('u') => self.toggle_language(),
             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -1684,6 +2021,7 @@ impl App {
             KeyCode::Char('U') => self.start_url_input(UrlInputMode::Url),
             KeyCode::Char('f') => self.start_url_input(UrlInputMode::YtSearch),
             KeyCode::Char('F') => self.start_url_input(UrlInputMode::ScSearch),
+            KeyCode::Char('o') | KeyCode::Char('O') => self.open_file_browser(),
             KeyCode::Char('r') | KeyCode::Char('R') => self.reload_provider_playlists(),
             KeyCode::Char('t') | KeyCode::Char('T') => {
                 self.show_themes = true;
@@ -1783,6 +2121,9 @@ impl App {
         if let Some(err) = self.player.take_error() {
             self.error = Some(err);
         }
+        if !self.player.is_loading() {
+            self.apply_resume_if_ready();
+        }
         if self.player.take_gapless_advanced() {
             let _ = self.playlist.next();
             if let Some(idx) = self.playlist.index() {
@@ -1824,6 +2165,10 @@ impl App {
     }
 
     fn quit(&mut self) {
+        self.capture_resume_state();
+        for entry in &mut self.providers {
+            entry.provider.close();
+        }
         self.player.close();
         self.quitting = true;
     }
@@ -1837,7 +2182,7 @@ impl App {
             }
         } else {
             if let Some((track, idx)) = self.playlist.current() {
-                if track.stream {
+                if track.is_live() {
                     self.play_track(track, idx);
                     return;
                 }
@@ -1868,7 +2213,7 @@ impl App {
         }
     }
 
-    fn play_track(&mut self, mut track: crate::playlist::Track, track_idx: usize) {
+    fn play_track(&mut self, track: crate::playlist::Track, _track_idx: usize) {
         self.title_off = 0;
         self.lyrics_lines.clear();
         self.lyrics_error = None;
@@ -1878,20 +2223,12 @@ impl App {
         self.reset_lyrics_conveyor();
 
         if track.ytdlp {
-            match ytdlp::resolve_stream_url(&track.path) {
-                Ok(stream_url) => {
-                    track.path = stream_url;
-                    track.ytdlp = false;
-                    self.playlist.set_track(track_idx, track.clone());
-                }
-                Err(err) => {
-                    self.error = Some(err.to_string());
-                    return;
-                }
-            }
+            self.player.play_ytdlp_async(&track.path);
+        } else if let Some(loader) = self.native_loader_for_track(&track) {
+            self.player.play_native_async(loader);
+        } else {
+            self.player.play_async(&track.path, track.realtime);
         }
-
-        self.player.play_async(&track.path);
         self.error = None;
         self.prefetch_lyrics_for_track(&track);
         if let Some(next_track) = self.playlist.peek_next() {
@@ -1901,6 +2238,25 @@ impl App {
             self.fetch_lyrics_for_current(false);
         }
         self.preload_next();
+    }
+
+    fn native_loader_for_track(
+        &self,
+        track: &crate::playlist::Track,
+    ) -> Option<crate::provider::NativeSourceLoader> {
+        for entry in &self.providers {
+            match entry
+                .provider
+                .native_loader(track, self.player.output_sample_rate())
+            {
+                Ok(Some(loader)) => return Some(loader),
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("native loader init failed for {}: {err}", entry.name);
+                }
+            }
+        }
+        None
     }
 
     fn preload_next(&mut self) {
@@ -2300,8 +2656,114 @@ impl App {
     fn current_track_is_stream(&self) -> bool {
         self.playlist
             .current()
-            .map(|(t, _)| t.stream)
+            .map(|(t, _)| t.is_live())
             .unwrap_or(false)
+    }
+
+    fn current_track_total_duration(&self) -> Duration {
+        let player_duration = self.player.duration();
+        let track_duration = self
+            .playlist
+            .current()
+            .map(|(track, _)| Duration::from_secs(track.duration_secs as u64))
+            .unwrap_or(Duration::ZERO);
+        player_duration.max(track_duration)
+    }
+
+    fn current_track_can_seek(&self) -> bool {
+        !self.current_track_is_stream() && self.current_track_total_duration() > Duration::ZERO
+    }
+
+    fn toggle_play_pause(&mut self) {
+        if self.player.is_loading() {
+            return;
+        }
+        if !self.player.is_playing() {
+            self.play_current_track();
+            return;
+        }
+        if self.player.is_paused() && self.current_track_is_stream() {
+            self.play_current_track();
+            return;
+        }
+        self.player.toggle_pause();
+    }
+
+    fn apply_resume_if_ready(&mut self) {
+        let Some(path) = self.resume_path.clone() else {
+            return;
+        };
+        if self.resume_secs == 0 || self.player.is_loading() || !self.current_track_can_seek() {
+            return;
+        }
+        let Some((track, _)) = self.playlist.current() else {
+            return;
+        };
+        if track.path != path {
+            return;
+        }
+
+        let target = Duration::from_secs(self.resume_secs).min(self.current_track_total_duration());
+        let current = self.player.position();
+        if target > current {
+            self.player.seek(target - current, false);
+        } else if current > target {
+            self.player.seek(current - target, true);
+        }
+        self.resume_path = None;
+        self.resume_secs = 0;
+    }
+
+    fn capture_resume_state(&mut self) {
+        let Some((track, _)) = self.playlist.current() else {
+            self.exit_resume = None;
+            return;
+        };
+        if track.path.trim().is_empty()
+            || track.is_live()
+            || track.ytdlp
+            || !self.player.is_playing()
+            || self.player.is_loading()
+        {
+            self.exit_resume = None;
+            return;
+        }
+
+        let secs = self.player.position().as_secs();
+        if secs == 0 {
+            self.exit_resume = None;
+            return;
+        }
+
+        self.exit_resume = Some((track.path.clone(), secs));
+    }
+
+    fn playlist_visible_cap(&self) -> usize {
+        if self.pl_expanded {
+            MAX_PL_EXPAND_VISIBLE
+        } else {
+            MAX_PL_VISIBLE
+        }
+    }
+
+    fn refresh_playlist_visible(&mut self) {
+        let cap = self.playlist_visible_cap();
+        let available = terminal::size()
+            .ok()
+            .map(|(_, h)| {
+                let vis_rows = if self.vis.is_disabled() {
+                    0
+                } else {
+                    DEFAULT_VIS_ROWS
+                };
+                let provider_rows = usize::from(!self.providers.is_empty());
+                let help_rows = self.render_help_lines().len();
+                let fixed_rows = 15 + vis_rows + provider_rows + help_rows;
+                (h as usize).saturating_sub(fixed_rows)
+            })
+            .unwrap_or(cap);
+
+        self.pl_visible = available.clamp(3, cap);
     }
 
     fn seek_step_duration(&self, modifiers: KeyModifiers) -> Duration {
@@ -2323,31 +2785,34 @@ impl App {
 
     fn render(&mut self) -> String {
         if self.show_keymap {
-            return wrap_frame(self.render_keymap());
+            return wrap_frame(self.render_keymap(), self.panel_width());
         }
         if self.show_themes {
-            return wrap_frame(self.render_theme_picker());
+            return wrap_frame(self.render_theme_picker(), self.panel_width());
         }
         if self.show_pl_manager {
-            return wrap_frame(self.render_playlist_manager());
+            return wrap_frame(self.render_playlist_manager(), self.panel_width());
         }
         if self.show_queue {
-            return wrap_frame(self.render_queue_manager());
+            return wrap_frame(self.render_queue_manager(), self.panel_width());
         }
         if self.show_info {
-            return wrap_frame(self.render_track_info_overlay());
+            return wrap_frame(self.render_track_info_overlay(), self.panel_width());
         }
         if self.jump_inputting {
-            return wrap_frame(self.render_jump_input_overlay());
+            return wrap_frame(self.render_jump_input_overlay(), self.panel_width());
+        }
+        if self.show_file_browser {
+            return wrap_frame(self.render_file_browser_overlay(), self.panel_width());
         }
         if self.url_inputting {
-            return wrap_frame(self.render_url_input_overlay());
+            return wrap_frame(self.render_url_input_overlay(), self.panel_width());
         }
         if self.show_lyrics {
-            return wrap_frame(self.render_lyrics_overlay());
+            return wrap_frame(self.render_lyrics_overlay(), self.panel_width());
         }
         if self.full_vis {
-            return wrap_frame(self.render_full_visualizer());
+            return wrap_frame(self.render_full_visualizer(), self.panel_width());
         }
 
         let mut lines = vec![
@@ -2375,7 +2840,7 @@ impl App {
             lines.push(msg.clone());
         }
 
-        wrap_frame(lines)
+        wrap_frame(lines, self.panel_width())
     }
 
     fn render_keymap(&self) -> Vec<String> {
@@ -2449,13 +2914,14 @@ impl App {
             lines.push(self.tr("  (empty)", "  （空）").to_string());
         } else {
             let max_visible = self.pl_visible.max(8);
+            let panel_width = self.panel_width();
             let scroll = self
                 .queue_cursor
                 .saturating_sub(max_visible.saturating_sub(1));
             for (i, track) in tracks.iter().enumerate().skip(scroll).take(max_visible) {
                 let mut name = track.display_name();
-                if display_width(&name) > PANEL_WIDTH.saturating_sub(8) {
-                    let mut trimmed = truncate_to_width(&name, PANEL_WIDTH.saturating_sub(9));
+                if display_width(&name) > panel_width.saturating_sub(8) {
+                    let mut trimmed = truncate_to_width(&name, panel_width.saturating_sub(9));
                     trimmed.push('…');
                     name = trimmed;
                 }
@@ -2497,13 +2963,14 @@ impl App {
 
         let tracks = self.playlist.tracks();
         let max_visible = self.pl_visible.max(10);
+        let panel_width = self.panel_width();
         let scroll = self
             .pl_mgr_cursor
             .saturating_sub(max_visible.saturating_sub(1));
         for (idx, track) in tracks.iter().enumerate().skip(scroll).take(max_visible) {
             let mut name = track.display_name();
-            if display_width(&name) > PANEL_WIDTH.saturating_sub(8) {
-                let mut trimmed = truncate_to_width(&name, PANEL_WIDTH.saturating_sub(9));
+            if display_width(&name) > panel_width.saturating_sub(8) {
+                let mut trimmed = truncate_to_width(&name, panel_width.saturating_sub(9));
                 trimmed.push('…');
                 name = trimmed;
             }
@@ -2601,6 +3068,79 @@ impl App {
             self.tr("[Enter]Jump [Esc]Cancel", "[Enter]跳转 [Esc]取消")
                 .to_string(),
         ]
+    }
+
+    fn render_file_browser_overlay(&self) -> Vec<String> {
+        let mut lines = vec![
+            self.tr("O P E N  F I L E S", "打 开 文 件").to_string(),
+            format!("  {}", self.fb_dir.display()),
+            String::new(),
+        ];
+
+        if let Some(err) = &self.fb_err {
+            lines.push(format!("  {}: {err}", self.tr("Error", "错误")));
+            lines.push(String::new());
+        }
+
+        let max_visible = if let Ok((_w, h)) = terminal::size() {
+            (h as usize).saturating_sub(16).clamp(8, 14)
+        } else {
+            12
+        };
+        let scroll = self.fb_cursor.saturating_sub(max_visible.saturating_sub(1));
+
+        if self.fb_entries.is_empty() {
+            lines.push(self.tr("  (empty)", "  （空）").to_string());
+        } else {
+            for (idx, entry) in self
+                .fb_entries
+                .iter()
+                .enumerate()
+                .skip(scroll)
+                .take(max_visible)
+            {
+                let mut label = String::new();
+                if self.fb_selected.contains(&entry.path) {
+                    label.push_str("✓ ");
+                } else {
+                    label.push_str("  ");
+                }
+                label.push_str(&entry.name);
+                if entry.is_selectable && !entry.is_dir {
+                    label.push_str(if entry.is_playlist { " ≡" } else { " ♫" });
+                }
+                let panel_width = self.panel_width();
+                if display_width(&label) > panel_width.saturating_sub(2) {
+                    let mut trimmed = truncate_to_width(&label, panel_width.saturating_sub(3));
+                    trimmed.push('…');
+                    label = trimmed;
+                }
+
+                if idx == self.fb_cursor {
+                    lines.push(format!("> {label}"));
+                } else {
+                    lines.push(format!("  {label}"));
+                }
+            }
+        }
+
+        lines.push(String::new());
+        if self.fb_selected.is_empty() {
+            lines.push(self.tr("  0 selected", "  已选 0 项").to_string());
+        } else if self.lang == UiLang::Zh {
+            lines.push(format!("  已选 {} 项", self.fb_selected.len()));
+        } else {
+            lines.push(format!("  {} selected", self.fb_selected.len()));
+        }
+        lines.push(
+            self.tr(
+                "[↑↓]Move [Enter]Open/Add [Space]Select [a]All [R]Replace [←/BS]Up [Esc/o]Close",
+                "[↑↓]移动 [Enter]打开/加入 [Space]选择 [a]全选 [R]替换 [←/BS]上级 [Esc/o]关闭",
+            )
+            .to_string(),
+        );
+
+        lines
     }
 
     fn render_lyrics_overlay(&self) -> Vec<String> {
@@ -2766,7 +3306,7 @@ impl App {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| self.tr("No track loaded", "未加载曲目").to_string());
 
-        let max_w = PANEL_WIDTH.saturating_sub(4);
+        let max_w = self.panel_width().saturating_sub(4);
         let chars: Vec<char> = name.chars().collect();
 
         if chars.len() <= max_w {
@@ -2792,7 +3332,7 @@ impl App {
 
     fn render_time_status(&self) -> String {
         let pos = self.player.position();
-        let dur = self.player.duration();
+        let dur = self.current_track_total_duration();
 
         let pos_min = pos.as_secs() / 60;
         let pos_sec = pos.as_secs() % 60;
@@ -2801,20 +3341,35 @@ impl App {
 
         let left = format!("{pos_min:02}:{pos_sec:02} / {dur_min:02}:{dur_sec:02}");
         let status = if self.player.is_playing() && self.player.is_paused() {
-            self.tr("⏸ Paused", "⏸ 暂停")
+            self.tr("⏸ Paused", "⏸ 暂停").to_string()
         } else if self.player.is_loading() {
-            self.tr("… Loading", "… 载入中")
+            let elapsed = self
+                .player
+                .loading_elapsed()
+                .unwrap_or(Duration::ZERO)
+                .as_secs();
+            let label = if self.current_track_is_stream() {
+                self.tr("◌ Buffering", "◌ 缓冲中")
+            } else {
+                self.tr("… Loading", "… 载入中")
+            };
+            if elapsed > 0 {
+                format!("{label} ({elapsed}s)")
+            } else {
+                label.to_string()
+            }
         } else if self.player.is_playing() && self.current_track_is_stream() {
-            self.tr("● Streaming", "● 流媒体")
+            self.tr("● Streaming", "● 流媒体").to_string()
         } else if self.player.is_playing() {
-            self.tr("▶ Playing", "▶ 播放中")
+            self.tr("▶ Playing", "▶ 播放中").to_string()
         } else {
-            self.tr("■ Stopped", "■ 已停止")
+            self.tr("■ Stopped", "■ 已停止").to_string()
         };
 
-        let gap = PANEL_WIDTH
+        let gap = self
+            .panel_width()
             .saturating_sub(display_width(&left))
-            .saturating_sub(display_width(status))
+            .saturating_sub(display_width(&status))
             .max(1);
 
         format!("{left}{}{}", " ".repeat(gap), status)
@@ -2843,27 +3398,28 @@ impl App {
     }
 
     fn render_seek_bar(&self) -> String {
+        let panel_width = self.panel_width();
         if self.current_track_is_stream() && self.player.is_playing() {
             let label = self.tr(" STREAMING ", " 流媒体 ");
-            let total = PANEL_WIDTH.saturating_sub(display_width(label));
+            let total = panel_width.saturating_sub(display_width(label));
             let left = total / 2;
             let right = total.saturating_sub(left);
             return format!("{}{}{}", "━".repeat(left), label, "━".repeat(right));
         }
 
         let pos = self.player.position();
-        let dur = self.player.duration();
+        let dur = self.current_track_total_duration();
 
         let mut progress = 0.0;
         if dur > Duration::ZERO {
             progress = (pos.as_secs_f64() / dur.as_secs_f64()).clamp(0.0, 1.0);
         }
 
-        let filled = (progress * (PANEL_WIDTH.saturating_sub(1)) as f64) as usize;
+        let filled = (progress * (panel_width.saturating_sub(1)) as f64) as usize;
         format!(
             "{}●{}",
             "━".repeat(filled),
-            "━".repeat(PANEL_WIDTH.saturating_sub(filled + 1))
+            "━".repeat(panel_width.saturating_sub(filled + 1))
         )
     }
 
@@ -2890,7 +3446,8 @@ impl App {
     fn render_controls(&self) -> Vec<String> {
         let left = self.render_volume();
         let right = self.render_output_info();
-        let gap = PANEL_WIDTH
+        let gap = self
+            .panel_width()
             .saturating_sub(display_width(&left))
             .saturating_sub(display_width(&right))
             .max(2);
@@ -2911,10 +3468,17 @@ impl App {
         } else {
             format!("{:.0}Hz", sr.round())
         };
+        let resample = self.player.resample_quality_label();
+        let bit_depth = self.player.ffmpeg_bit_depth();
+        let buffer = self
+            .player
+            .output_buffer_ms()
+            .map(|ms| format!(" · {ms}ms"))
+            .unwrap_or_default();
         if self.lang == UiLang::Zh {
-            format!("输出 {sr_label} · 重采样 线性")
+            format!("输出 {sr_label} · 重采样 {resample} · PCM{bit_depth}{buffer}")
         } else {
-            format!("OUT {sr_label} · Resample Linear")
+            format!("OUT {sr_label} · Resample {resample} · PCM{bit_depth}{buffer}")
         }
     }
 
@@ -3005,6 +3569,15 @@ impl App {
                 }];
             }
 
+            if self.prov_needs_auth {
+                return vec![
+                    self.tr("  Authentication required.", "  需要先完成登录授权。")
+                        .to_string(),
+                    self.tr("  Press [Enter] to sign in.", "  按 [Enter] 开始登录。")
+                        .to_string(),
+                ];
+            }
+
             if self.provider_lists.is_empty() {
                 if self.error.is_some() {
                     return vec![
@@ -3033,8 +3606,9 @@ impl App {
                 } else {
                     format!("{prefix}{} ({} tracks)", pl.name, pl.track_count)
                 };
-                if display_width(&name) > PANEL_WIDTH {
-                    let mut trimmed = truncate_to_width(&name, PANEL_WIDTH.saturating_sub(1));
+                let panel_width = self.panel_width();
+                if display_width(&name) > panel_width {
+                    let mut trimmed = truncate_to_width(&name, panel_width.saturating_sub(1));
                     trimmed.push('…');
                     name = trimmed;
                 }
@@ -3077,7 +3651,8 @@ impl App {
                 .map(|qp| format!(" [Q{qp}]"))
                 .unwrap_or_default();
 
-            let max_w = PANEL_WIDTH
+            let max_w = self
+                .panel_width()
                 .saturating_sub(6)
                 .saturating_sub(display_width(&queue_suffix));
             if display_width(&name) > max_w {
@@ -3125,7 +3700,7 @@ impl App {
             };
 
             let mut name = tracks[idx].display_name();
-            let max_w = PANEL_WIDTH.saturating_sub(6);
+            let max_w = self.panel_width().saturating_sub(6);
             if display_width(&name) > max_w {
                 let mut trimmed = truncate_to_width(&name, max_w.saturating_sub(1));
                 trimmed.push('…');
@@ -3162,8 +3737,8 @@ impl App {
         if self.focus == FocusArea::Provider {
             return vec![
                 self.tr(
-                    "[←→]Provider [↑↓]Navigate [Enter]Load [r]Reload [U]URL [f/F]Find",
-                    "[←→]切服务端 [↑↓]移动 [Enter]加载 [r]重载 [U]URL [f/F]搜索",
+                    "[←→]Provider [↑↓]Navigate [Enter]Load [r]Reload [o]Files [U]URL [f/F]Find",
+                    "[←→]切服务端 [↑↓]移动 [Enter]加载 [r]重载 [o]文件 [U]URL [f/F]搜索",
                 )
                 .to_string(),
                 self.tr(
@@ -3172,15 +3747,23 @@ impl App {
                 )
                 .to_string(),
                 self.tr(
-                    "[Tab]Focus [N]Browser [Q]Quit",
-                    "[Tab]焦点 [N]浏览器 [Q]退出",
+                    if self.prov_needs_auth {
+                        "[Enter]Sign in [N]Browser [Q]Quit"
+                    } else {
+                        "[Tab]Focus [N]Browser [Q]Quit"
+                    },
+                    if self.prov_needs_auth {
+                        "[Enter]登录 [N]浏览器 [Q]退出"
+                    } else {
+                        "[Tab]焦点 [N]浏览器 [Q]退出"
+                    },
                 )
                 .to_string(),
             ];
         }
 
         let mut line1 = String::from(self.tr("[Spc]⏯ [<>]Trk ", "[空格]⏯ [<>]曲目 "));
-        if !self.current_track_is_stream() {
+        if self.current_track_can_seek() {
             line1.push_str(self.tr("[←→]Seek [J]Jump ", "[←→]快进/退 [J]跳转 "));
         }
         line1.push_str(self.tr(
@@ -3189,8 +3772,8 @@ impl App {
         ));
 
         let line2 = self.tr(
-            "[y]Lyrics [U]URL [f/F]Find [u]Lang [i]Info [g]BG [a]Queue [A]QMgr",
-            "[y]歌词 [U]URL [f/F]搜索 [u]语言 [i]信息 [g]背景 [a]队列 [A]队列管",
+            "[y]Lyrics [o]Files [U]URL [f/F]Find [u]Lang [i]Info [g]BG [a]Queue [A]QMgr",
+            "[y]歌词 [o]文件 [U]URL [f/F]搜索 [u]语言 [i]信息 [g]背景 [a]队列 [A]队列管",
         );
 
         let mut line3 = String::new();
@@ -3249,7 +3832,7 @@ impl App {
             .iter()
             .map(|line| display_width(line))
             .max()
-            .unwrap_or(PANEL_WIDTH + 6);
+            .unwrap_or(self.panel_width() + 6);
 
         let pad_left = term_w.saturating_sub(frame_w) / 2;
         let pad_top = term_h.saturating_sub(frame_h) / 2;
@@ -3344,6 +3927,8 @@ impl App {
             || trimmed.starts_with("按 键 说 明")
             || trimmed.starts_with("T R A C K  I N F O")
             || trimmed.starts_with("曲 目 信 息")
+            || trimmed.starts_with("O P E N  F I L E S")
+            || trimmed.starts_with("打 开 文 件")
             || trimmed.starts_with("T H E M E S")
             || trimmed.starts_with("主 题")
         {
@@ -3703,8 +4288,8 @@ impl App {
     }
 }
 
-fn wrap_frame(lines: Vec<String>) -> String {
-    let inner = PANEL_WIDTH + 4;
+fn wrap_frame(lines: Vec<String>, panel_width: usize) -> String {
+    let inner = panel_width + 4;
     let mut out = String::new();
 
     out.push('╭');
@@ -3718,8 +4303,8 @@ fn wrap_frame(lines: Vec<String>) -> String {
     out.push('\n');
 
     for line in lines {
-        let clipped = truncate_to_width(&line, PANEL_WIDTH);
-        let padded = pad_to_width(&clipped, PANEL_WIDTH);
+        let clipped = truncate_to_width(&line, panel_width);
+        let padded = pad_to_width(&clipped, panel_width);
         out.push_str("│  ");
         out.push_str(&padded);
         out.push_str("  │\n");
@@ -3996,6 +4581,13 @@ fn sanitize_filename(name: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn is_browser_playlist_path(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|part| part.to_str()) else {
+        return false;
+    };
+    matches!(ext.to_ascii_lowercase().as_str(), "m3u" | "m3u8" | "pls")
 }
 
 fn colors_enabled() -> bool {

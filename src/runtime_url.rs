@@ -167,6 +167,8 @@ fn parse_xiaoyuzhou_episode_html(page_url: &str, doc: &str) -> Result<Track> {
         artist: artist.unwrap_or_default(),
         stream: true,
         ytdlp: false,
+        realtime: false,
+        duration_secs: 0,
     })
 }
 
@@ -250,6 +252,8 @@ fn resolve_m3u(url: &str) -> Result<Vec<Track>> {
 fn parse_m3u_tracks(body: &str) -> Vec<Track> {
     let mut tracks = Vec::new();
     let mut pending_title: Option<String> = None;
+    let mut pending_duration_secs: Option<u32> = None;
+    let mut pending_realtime = false;
 
     for raw in body.lines() {
         let line = raw.trim();
@@ -258,11 +262,9 @@ fn parse_m3u_tracks(body: &str) -> Vec<Track> {
         }
 
         if let Some(rest) = line.strip_prefix("#EXTINF:") {
-            let title = rest
-                .split_once(',')
-                .map(|(_, t)| t.trim())
-                .unwrap_or_default()
-                .to_string();
+            let (duration_secs, realtime, title) = parse_extinf(rest);
+            pending_duration_secs = duration_secs;
+            pending_realtime = realtime;
             if !title.is_empty() {
                 pending_title = Some(title);
             }
@@ -277,6 +279,11 @@ fn parse_m3u_tracks(body: &str) -> Vec<Track> {
         if let Some(title) = pending_title.take() {
             apply_title_hint(&mut track, title);
         }
+        if let Some(duration_secs) = pending_duration_secs.take() {
+            track.duration_secs = duration_secs;
+        }
+        track.realtime = pending_realtime;
+        pending_realtime = false;
         tracks.push(track);
     }
 
@@ -296,6 +303,7 @@ fn resolve_pls(url: &str) -> Result<Vec<Track>> {
 fn parse_pls_tracks(body: &str) -> Result<Vec<Track>> {
     let mut files = BTreeMap::<usize, String>::new();
     let mut titles = BTreeMap::<usize, String>::new();
+    let mut lengths = BTreeMap::<usize, i32>::new();
 
     for raw in body.lines() {
         let line = raw.trim();
@@ -324,6 +332,15 @@ fn parse_pls_tracks(body: &str) -> Result<Vec<Track>> {
             .and_then(|s| s.parse::<usize>().ok())
         {
             titles.insert(num, value.to_string());
+            continue;
+        }
+        if let Some(num) = lower
+            .strip_prefix("length")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            if let Ok(length) = value.parse::<i32>() {
+                lengths.insert(num, length);
+            }
         }
     }
 
@@ -344,6 +361,7 @@ fn parse_pls_tracks(body: &str) -> Result<Vec<Track>> {
                 apply_title_hint(&mut track, cleaned.to_string());
             }
         }
+        apply_pls_length(&mut track, lengths.get(&first_idx).copied(), true);
         return Ok(vec![track]);
     }
 
@@ -356,9 +374,45 @@ fn parse_pls_tracks(body: &str) -> Result<Vec<Track>> {
         if let Some(title) = titles.get(&idx) {
             apply_title_hint(&mut track, title.trim().to_string());
         }
+        apply_pls_length(&mut track, lengths.get(&idx).copied(), false);
         out.push(track);
     }
     Ok(out)
+}
+
+fn parse_extinf(rest: &str) -> (Option<u32>, bool, String) {
+    let mut duration_secs = None;
+    let mut realtime = false;
+    let title = if let Some((dur, raw_title)) = rest.split_once(',') {
+        if let Ok(parsed) = dur.trim().parse::<i32>() {
+            if parsed < 0 {
+                realtime = true;
+            } else {
+                duration_secs = Some(parsed as u32);
+            }
+        }
+        raw_title.trim().to_string()
+    } else {
+        rest.trim().to_string()
+    };
+
+    (duration_secs, realtime, title)
+}
+
+fn apply_pls_length(track: &mut Track, length: Option<i32>, assume_realtime_stream: bool) {
+    match length {
+        Some(value) if value < 0 => {
+            track.realtime = true;
+            track.duration_secs = 0;
+        }
+        Some(value) if value > 0 => {
+            track.duration_secs = value as u32;
+        }
+        _ if assume_realtime_stream && track.stream => {
+            track.realtime = true;
+        }
+        _ => {}
+    }
 }
 
 fn apply_title_hint(track: &mut Track, title: String) {
@@ -399,6 +453,7 @@ fn resolve_feed(url: &str) -> Result<Vec<Track>> {
     let mut channel_title = String::new();
     let mut item_title = String::new();
     let mut enclosure_url = String::new();
+    let mut item_duration_secs = 0u32;
     let mut tracks = Vec::new();
 
     loop {
@@ -409,6 +464,7 @@ fn resolve_feed(url: &str) -> Result<Vec<Track>> {
                     in_item = true;
                     item_title.clear();
                     enclosure_url.clear();
+                    item_duration_secs = 0;
                 }
                 current_tag = name;
             }
@@ -434,6 +490,10 @@ fn resolve_feed(url: &str) -> Result<Vec<Track>> {
                     } else if channel_title.is_empty() {
                         channel_title = text;
                     }
+                } else if current_tag.as_slice() == b"itunes:duration"
+                    || current_tag.as_slice() == b"duration"
+                {
+                    item_duration_secs = parse_itunes_duration(&text);
                 }
             }
             Ok(Event::End(e)) => {
@@ -449,11 +509,14 @@ fn resolve_feed(url: &str) -> Result<Vec<Track>> {
                             artist: channel_title.clone(),
                             stream: true,
                             ytdlp: false,
+                            realtime: false,
+                            duration_secs: item_duration_secs,
                         });
                     }
                     in_item = false;
                     item_title.clear();
                     enclosure_url.clear();
+                    item_duration_secs = 0;
                 }
                 current_tag.clear();
             }
@@ -465,4 +528,84 @@ fn resolve_feed(url: &str) -> Result<Vec<Track>> {
     }
 
     Ok(tracks)
+}
+
+fn parse_itunes_duration(raw: &str) -> u32 {
+    let text = raw.trim();
+    if text.is_empty() {
+        return 0;
+    }
+
+    let parse_secs = |value: &str| -> Option<u32> {
+        let parsed = value.trim().parse::<f64>().ok()?;
+        if parsed.is_sign_negative() {
+            None
+        } else {
+            Some(parsed.floor() as u32)
+        }
+    };
+
+    let parts = text.split(':').collect::<Vec<_>>();
+    let total = match parts.as_slice() {
+        [secs] => parse_secs(secs),
+        [mins, secs] => mins
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .zip(parse_secs(secs))
+            .map(|(mins, secs)| mins.saturating_mul(60).saturating_add(secs)),
+        [hours, mins, secs] => hours
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .zip(mins.trim().parse::<u32>().ok())
+            .zip(parse_secs(secs))
+            .map(|((hours, mins), secs)| {
+                hours
+                    .saturating_mul(3600)
+                    .saturating_add(mins.saturating_mul(60))
+                    .saturating_add(secs)
+            }),
+        _ => None,
+    };
+
+    total.unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_itunes_duration, parse_m3u_tracks};
+
+    #[test]
+    fn parses_itunes_duration_formats() {
+        assert_eq!(parse_itunes_duration("3600"), 3600);
+        assert_eq!(parse_itunes_duration("3661.5"), 3661);
+        assert_eq!(parse_itunes_duration("1:30"), 90);
+        assert_eq!(parse_itunes_duration("1:27:05"), 5225);
+        assert_eq!(parse_itunes_duration("-1"), 0);
+        assert_eq!(parse_itunes_duration("abc"), 0);
+    }
+
+    #[test]
+    fn parses_m3u_extinf_duration_and_live_flag() {
+        let tracks = parse_m3u_tracks(
+            "\
+#EXTM3U
+#EXTINF:-1,Live Station
+https://radio.example.com/live.mp3
+#EXTINF:215,Artist - Song
+https://cdn.example.com/song.mp3
+",
+        );
+
+        assert_eq!(tracks.len(), 2);
+        assert!(tracks[0].realtime);
+        assert_eq!(tracks[0].duration_secs, 0);
+        assert_eq!(tracks[0].title, "Live Station");
+
+        assert!(!tracks[1].realtime);
+        assert_eq!(tracks[1].duration_secs, 215);
+        assert_eq!(tracks[1].artist, "Artist");
+        assert_eq!(tracks[1].title, "Song");
+    }
 }

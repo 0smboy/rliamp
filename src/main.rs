@@ -1,26 +1,33 @@
 mod background;
 mod config;
+mod local_source;
 mod lyrics;
 mod navidrome;
 mod player;
 mod playlist;
 mod provider;
 mod radio;
+mod resume;
 mod runtime_url;
+#[cfg(feature = "spotify-experimental")]
+mod spotify;
 mod ui;
 mod visualizer;
 mod ytdlp;
+mod ytmusic;
 
 use anyhow::{anyhow, Context, Result};
 use glob::glob;
+use local_source::resolve_local_input;
 use navidrome::NavidromeClient;
 use playlist::{is_url, Playlist, Track};
 use provider::ProviderEntry;
 use radio::RadioProvider;
-use std::collections::BTreeMap;
-use std::fs;
+#[cfg(feature = "spotify-experimental")]
+use spotify::SpotifyProvider;
 use std::path::{Path, PathBuf};
 use std::process;
+use ytmusic::YtProviderBundle;
 
 #[derive(Debug, Clone, Default)]
 struct CliOverrides {
@@ -29,8 +36,14 @@ struct CliOverrides {
     repeat: Option<String>,
     mono: Option<bool>,
     theme: Option<String>,
+    visualizer: Option<String>,
+    compact: Option<bool>,
     provider: Option<String>,
     eq_preset: Option<String>,
+    sample_rate: Option<u32>,
+    buffer_ms: Option<u32>,
+    resample_quality: Option<u8>,
+    bit_depth: Option<u16>,
     auto_play: bool,
 }
 
@@ -51,8 +64,14 @@ Flags:
   --repeat <off|all|one>
   --mono / --no-mono
   --theme <name>         Theme name (e.g. tokyo-night, nord, gruvbox, rose-pine)
-  --provider <name>      Provider: radio or navidrome
+  --visualizer <name>    Startup visualizer mode
+  --compact              Cap the main frame width to 80 columns
+  --provider <name>      Provider: radio, navidrome, youtube, or ytmusic
   --eq-preset <name>     EQ preset name (e.g. Bass Boost)
+  --sample-rate <Hz>     Preferred output sample rate
+  --buffer-ms <ms>       Preferred output buffer size
+  --resample-quality <1-4>
+  --bit-depth <16|32>    FFmpeg PCM precision
   --auto-play            Start playback immediately
   --help, -h             Show this help message
   --version, -v          Show the current version
@@ -76,7 +95,8 @@ Examples:
 
 Environment:
   NAVIDROME_URL, NAVIDROME_USER, NAVIDROME_PASS, NAVIDROME_TOKEN
-  (env fallback when [navidrome] is not set in ~/.config/rliamp/config.toml)
+  YTMUSIC_CLIENT_ID, YTMUSIC_CLIENT_SECRET, YTMUSIC_COOKIES_FROM
+  (env fallback when matching config sections are not set in ~/.config/rliamp/config.toml)
 
 Formats:
   mp3, wav, flac, ogg, m4a, aac, opus, wma
@@ -103,11 +123,12 @@ fn run() -> Result<()> {
         .provider
         .clone()
         .unwrap_or_else(|| cfg.provider.clone());
-    let (providers, default_provider) = build_providers(&cfg, &provider_name)?;
+    let (providers, default_provider, ytdlp_cookies_from) = build_providers(&cfg, &provider_name)?;
+    ytdlp::set_cookies_from(ytdlp_cookies_from);
 
     if args.is_empty() && providers.is_empty() {
         return Err(anyhow!(
-            "usage: rliamp <file|folder|url> [...] or configure Navidrome via ~/.config/rliamp/config.toml [navidrome] (or env fallback)\n\nexamples:\n  rliamp song.mp3\n  rliamp ~/Music\n  rliamp ~/radio-stations.m3u\n  rliamp ~/radio-stations.pls\n  rliamp https://example.com/stream.m3u\n  rliamp https://soundcloud.com/user/sets/playlist\n\nprovider config section:\n  [navidrome]\n  url = \"https://navidrome.example.com\"\n  user = \"alice\"\n  password = \"secret\"\n\nprovider env fallback:\n  NAVIDROME_URL NAVIDROME_USER NAVIDROME_PASS (or NAVIDROME_TOKEN)\n\noptional tools:\n  yt-dlp (for SoundCloud/YouTube/Bandcamp URLs)"
+            "usage: rliamp <file|folder|url> [...] or configure a provider via ~/.config/rliamp/config.toml\n\nexamples:\n  rliamp song.mp3\n  rliamp ~/Music\n  rliamp ~/radio-stations.m3u\n  rliamp ~/radio-stations.pls\n  rliamp https://example.com/stream.m3u\n  rliamp https://soundcloud.com/user/sets/playlist\n\nprovider config sections:\n  [navidrome]\n  url = \"https://navidrome.example.com\"\n  user = \"alice\"\n  password = \"secret\"\n\n  [ytmusic]\n  client_id = \"google-client-id\"\n  client_secret = \"google-client-secret\"\n\nprovider env fallback:\n  NAVIDROME_URL NAVIDROME_USER NAVIDROME_PASS (or NAVIDROME_TOKEN)\n  YTMUSIC_CLIENT_ID YTMUSIC_CLIENT_SECRET (optional: YTMUSIC_COOKIES_FROM)\n\noptional tools:\n  yt-dlp (for SoundCloud/YouTube/Bandcamp URLs)\n\nexperimental:\n  Spotify is behind --features spotify-experimental and currently also requires Spotify Premium."
         ));
     }
 
@@ -150,6 +171,19 @@ fn run() -> Result<()> {
     );
     playlist.add(resolved_tracks);
 
+    let mut resume_target = None;
+    if let Some(state) = resume::load().unwrap_or(None) {
+        if let Some(idx) = playlist.tracks().iter().position(|track| {
+            !track.path.trim().is_empty()
+                && track.path == state.path
+                && !track.ytdlp
+                && !track.is_live()
+        }) {
+            playlist.set_index(idx);
+            resume_target = Some((state.path, state.secs));
+        }
+    }
+
     if playlist.len() == 0 && providers.is_empty() {
         return Err(anyhow!("no playable files found"));
     }
@@ -160,7 +194,12 @@ fn run() -> Result<()> {
     let mono = overrides.mono.unwrap_or(cfg.mono);
     let eq_preset = overrides.eq_preset.unwrap_or(cfg.eq_preset);
     let theme = overrides.theme.or(cfg.theme);
-    let visualizer = cfg.visualizer.clone();
+    let visualizer = overrides.visualizer.or(cfg.visualizer.clone());
+    let compact = overrides.compact.unwrap_or(cfg.compact);
+    let sample_rate = overrides.sample_rate.or(cfg.sample_rate);
+    let buffer_ms = overrides.buffer_ms.or(cfg.buffer_ms);
+    let resample_quality = overrides.resample_quality.unwrap_or(cfg.resample_quality);
+    let bit_depth = overrides.bit_depth.unwrap_or(cfg.bit_depth);
 
     match repeat.as_str() {
         "all" => playlist.cycle_repeat(),
@@ -174,7 +213,12 @@ fn run() -> Result<()> {
         playlist.toggle_shuffle();
     }
 
-    let player = player::Player::new()?;
+    let player = player::Player::new(player::PlayerOptions {
+        sample_rate,
+        buffer_ms,
+        resample_quality,
+        bit_depth,
+    })?;
     player.set_volume(volume);
     if mono {
         player.toggle_mono();
@@ -187,6 +231,11 @@ fn run() -> Result<()> {
 
     let mut app = ui::App::new(player, playlist, providers, &default_provider);
     app.set_seek_large_step_sec(cfg.seek_large_step_sec);
+    app.set_compact_mode(compact);
+    if let Some((path, secs)) = resume_target {
+        app.set_resume_state(path, secs);
+        app.set_auto_play(true);
+    }
     if !eq_preset.is_empty() && !eq_preset.eq_ignore_ascii_case("custom") {
         app.set_eq_preset_by_name(&eq_preset);
     }
@@ -200,8 +249,20 @@ fn run() -> Result<()> {
             let _ = app.set_visualizer_by_name(&mode_name);
         }
     }
-    app.set_auto_play(overrides.auto_play);
-    app.run()
+    if overrides.auto_play {
+        app.set_auto_play(true);
+    }
+
+    let result = app.run();
+    match app.resume_state() {
+        Some((path, secs)) => {
+            let _ = resume::save(&resume::ResumeState { path, secs });
+        }
+        None => {
+            let _ = resume::clear();
+        }
+    }
+    result
 }
 
 fn parse_cli_args(args: Vec<String>) -> Result<(CliAction, CliOverrides, Vec<String>)> {
@@ -224,6 +285,7 @@ fn parse_cli_args(args: Vec<String>) -> Result<(CliAction, CliOverrides, Vec<Str
             "--mono" => overrides.mono = Some(true),
             "--no-mono" => overrides.mono = Some(false),
             "--auto-play" => overrides.auto_play = true,
+            "--compact" => overrides.compact = Some(true),
             "--volume" => {
                 let value = next_arg(&args, &mut i, "--volume")?;
                 let parsed = value
@@ -239,8 +301,46 @@ fn parse_cli_args(args: Vec<String>) -> Result<(CliAction, CliOverrides, Vec<Str
                 overrides.repeat = Some(value);
             }
             "--theme" => overrides.theme = Some(next_arg(&args, &mut i, "--theme")?),
-            "--provider" => overrides.provider = Some(next_arg(&args, &mut i, "--provider")?),
+            "--visualizer" => overrides.visualizer = Some(next_arg(&args, &mut i, "--visualizer")?),
+            "--provider" => {
+                overrides.provider =
+                    Some(next_arg(&args, &mut i, "--provider")?.to_ascii_lowercase())
+            }
             "--eq-preset" => overrides.eq_preset = Some(next_arg(&args, &mut i, "--eq-preset")?),
+            "--sample-rate" => {
+                let value = next_arg(&args, &mut i, "--sample-rate")?;
+                let parsed = value
+                    .parse::<u32>()
+                    .map_err(|_| anyhow!("flag --sample-rate: invalid integer '{value}'"))?;
+                overrides.sample_rate = Some(parsed.clamp(8_000, 384_000));
+            }
+            "--buffer-ms" => {
+                let value = next_arg(&args, &mut i, "--buffer-ms")?;
+                let parsed = value
+                    .parse::<u32>()
+                    .map_err(|_| anyhow!("flag --buffer-ms: invalid integer '{value}'"))?;
+                overrides.buffer_ms = Some(parsed.clamp(20, 2_000));
+            }
+            "--resample-quality" => {
+                let value = next_arg(&args, &mut i, "--resample-quality")?;
+                let parsed = value
+                    .parse::<u8>()
+                    .map_err(|_| anyhow!("flag --resample-quality: invalid integer '{value}'"))?;
+                if !(1..=4).contains(&parsed) {
+                    return Err(anyhow!("flag --resample-quality must be between 1 and 4"));
+                }
+                overrides.resample_quality = Some(parsed);
+            }
+            "--bit-depth" => {
+                let value = next_arg(&args, &mut i, "--bit-depth")?;
+                let parsed = value
+                    .parse::<u16>()
+                    .map_err(|_| anyhow!("flag --bit-depth: invalid integer '{value}'"))?;
+                if !matches!(parsed, 16 | 32) {
+                    return Err(anyhow!("flag --bit-depth must be 16 or 32"));
+                }
+                overrides.bit_depth = Some(parsed);
+            }
             _ => return Err(anyhow!("unknown flag: {arg}")),
         }
 
@@ -253,15 +353,27 @@ fn parse_cli_args(args: Vec<String>) -> Result<(CliAction, CliOverrides, Vec<Str
 fn build_providers(
     cfg: &config::Config,
     provider_name: &str,
-) -> Result<(Vec<ProviderEntry>, String)> {
+) -> Result<(Vec<ProviderEntry>, String, Option<String>)> {
     let normalized = provider_name.trim().to_ascii_lowercase();
     if normalized == "none" {
-        return Ok((Vec::new(), "none".to_string()));
+        return Ok((Vec::new(), "none".to_string(), None));
     }
 
-    if !normalized.is_empty() && !matches!(normalized.as_str(), "radio" | "navidrome") {
+    if !normalized.is_empty()
+        && !matches!(
+            normalized.as_str(),
+            "radio" | "navidrome" | "youtube" | "yt" | "ytmusic" | "spotify" | "none"
+        )
+    {
         return Err(anyhow!(
-            "unsupported provider '{normalized}' (supported: radio, navidrome, none)"
+            "unsupported provider '{normalized}' (supported: radio, navidrome, youtube, ytmusic, spotify, none)"
+        ));
+    }
+
+    #[cfg(not(feature = "spotify-experimental"))]
+    if normalized == "spotify" {
+        return Err(anyhow!(
+            "provider 'spotify' is experimental and not built into this binary. Rebuild with `--features spotify-experimental`. Note: Spotify currently also requires Premium for Web API access."
         ));
     }
 
@@ -270,6 +382,7 @@ fn build_providers(
         name: "Radio".to_string(),
         provider: Box::new(RadioProvider::new()),
     }];
+    let mut ytdlp_cookies_from = None;
 
     if let Some(provider) =
         NavidromeClient::from_config(&cfg.navidrome).or_else(NavidromeClient::from_env)
@@ -285,13 +398,56 @@ fn build_providers(
         ));
     }
 
+    if let Some(bundle) =
+        YtProviderBundle::from_config(&cfg.ytmusic).or_else(YtProviderBundle::from_env)
+    {
+        ytdlp_cookies_from = bundle.cookies_from();
+        providers.push(ProviderEntry {
+            key: "ytmusic".to_string(),
+            name: "YouTube Music".to_string(),
+            provider: Box::new(bundle.music),
+        });
+        providers.push(ProviderEntry {
+            key: "youtube".to_string(),
+            name: "YouTube".to_string(),
+            provider: Box::new(bundle.video),
+        });
+    } else if matches!(normalized.as_str(), "youtube" | "yt" | "ytmusic") {
+        return Err(anyhow!(
+            "provider '{normalized}' is selected but no [ytmusic] client_id/client_secret config (or YTMUSIC_CLIENT_ID / YTMUSIC_CLIENT_SECRET env) was found"
+        ));
+    }
+
+    #[cfg(feature = "spotify-experimental")]
+    {
+        if let Some(provider) =
+            SpotifyProvider::from_config(&cfg.spotify).or_else(SpotifyProvider::from_env)
+        {
+            providers.push(ProviderEntry {
+                key: "spotify".to_string(),
+                name: "Spotify".to_string(),
+                provider: Box::new(provider),
+            });
+        } else if normalized == "spotify" {
+            return Err(anyhow!(
+                "provider 'spotify' is selected but no [spotify] client_id config (or SPOTIFY_CLIENT_ID env) was found"
+            ));
+        }
+    }
+
     let default_provider = if normalized.is_empty() {
-        cfg.provider.clone()
+        if cfg.provider == "yt" {
+            "youtube".to_string()
+        } else {
+            cfg.provider.clone()
+        }
+    } else if normalized == "yt" {
+        "youtube".to_string()
     } else {
         normalized
     };
 
-    Ok((providers, default_provider))
+    Ok((providers, default_provider, ytdlp_cookies_from))
 }
 
 fn normalize_search_args(args: Vec<String>) -> Result<Vec<String>> {
@@ -326,274 +482,6 @@ fn next_arg(args: &[String], index: &mut usize, flag: &str) -> Result<String> {
     }
     *index += 1;
     Ok(args[*index].clone())
-}
-
-fn resolve_local_input(
-    path: &Path,
-    files: &mut Vec<PathBuf>,
-    tracks: &mut Vec<Track>,
-) -> Result<()> {
-    let Ok(meta) = fs::metadata(path) else {
-        return Ok(());
-    };
-
-    if meta.is_file() {
-        if is_local_m3u(path) {
-            tracks.extend(resolve_local_m3u(path)?);
-            return Ok(());
-        }
-        if is_local_pls(path) {
-            tracks.extend(resolve_local_pls(path)?);
-            return Ok(());
-        }
-        if player::is_supported_path(path) {
-            files.push(path.to_path_buf());
-        }
-        return Ok(());
-    }
-
-    if meta.is_dir() {
-        collect_audio_files(path, files)?;
-    }
-
-    Ok(())
-}
-
-fn is_local_m3u(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
-        return false;
-    };
-    matches!(ext.to_ascii_lowercase().as_str(), "m3u" | "m3u8")
-}
-
-fn is_local_pls(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
-        return false;
-    };
-    ext.eq_ignore_ascii_case("pls")
-}
-
-fn collect_audio_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let Ok(meta) = fs::metadata(path) else {
-        return Ok(());
-    };
-
-    if meta.is_file() {
-        if player::is_supported_path(path) {
-            out.push(path.to_path_buf());
-        }
-        return Ok(());
-    }
-
-    if !meta.is_dir() {
-        return Ok(());
-    }
-
-    let mut entries: Vec<PathBuf> = fs::read_dir(path)?
-        .filter_map(|e| e.ok().map(|it| it.path()))
-        .collect();
-    entries.sort();
-
-    for p in entries {
-        collect_audio_files(&p, out)?;
-    }
-
-    Ok(())
-}
-
-fn resolve_local_m3u(path: &Path) -> Result<Vec<Track>> {
-    let body =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(parse_m3u_tracks(&body, path.parent()))
-}
-
-fn parse_m3u_tracks(body: &str, base_dir: Option<&Path>) -> Vec<Track> {
-    let mut tracks = Vec::new();
-    let mut pending_title: Option<String> = None;
-
-    for raw in body.lines() {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        if let Some(rest) = line.strip_prefix("#EXTINF:") {
-            let title = rest
-                .split_once(',')
-                .map(|(_, t)| t.trim())
-                .unwrap_or_default()
-                .to_string();
-            if !title.is_empty() {
-                pending_title = Some(title);
-            }
-            continue;
-        }
-
-        if line.starts_with('#') {
-            continue;
-        }
-
-        let mut track = if is_url(line) {
-            Track::from_path(line.to_string())
-        } else {
-            // Remote M3U entries should never resolve to local filesystem paths.
-            if base_dir.is_none() {
-                continue;
-            }
-
-            let Some(resolved) = resolve_local_playlist_path(base_dir, line) else {
-                continue;
-            };
-            Track::from_path(resolved.to_string_lossy().to_string())
-        };
-
-        if let Some(title) = pending_title.take() {
-            apply_title_hint(&mut track, title);
-        }
-        tracks.push(track);
-    }
-
-    tracks
-}
-
-fn resolve_local_pls(path: &Path) -> Result<Vec<Track>> {
-    let body =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    parse_pls_tracks(&body, path.parent())
-}
-
-fn parse_pls_tracks(body: &str, base_dir: Option<&Path>) -> Result<Vec<Track>> {
-    let mut files = BTreeMap::<usize, String>::new();
-    let mut titles = BTreeMap::<usize, String>::new();
-
-    for raw in body.lines() {
-        let line = raw.trim();
-        if line.is_empty()
-            || line.starts_with('[')
-            || line.starts_with(';')
-            || line.starts_with('#')
-        {
-            continue;
-        }
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        let key = k.trim();
-        let value = v.trim();
-        let lower = key.to_ascii_lowercase();
-        if let Some(num) = lower
-            .strip_prefix("file")
-            .and_then(|s| s.parse::<usize>().ok())
-        {
-            files.insert(num, value.to_string());
-            continue;
-        }
-        if let Some(num) = lower
-            .strip_prefix("title")
-            .and_then(|s| s.parse::<usize>().ok())
-        {
-            titles.insert(num, value.to_string());
-        }
-    }
-
-    if files.is_empty() {
-        return Err(anyhow!("no entries found in PLS playlist"));
-    }
-
-    let all_streams = files.len() > 1 && files.values().all(|p| is_url(p));
-    if all_streams {
-        let (&first_idx, first_path) = files
-            .iter()
-            .next()
-            .ok_or_else(|| anyhow!("no entries found in PLS playlist"))?;
-        let mut track = Track::from_path(first_path.to_string());
-        if let Some(title) = titles.get(&first_idx) {
-            let cleaned = strip_mirror_suffix(title.trim());
-            if !cleaned.is_empty() {
-                apply_title_hint(&mut track, cleaned.to_string());
-            }
-        }
-        return Ok(vec![track]);
-    }
-
-    let mut out = Vec::new();
-    for (idx, raw_path) in files {
-        let mut track = if is_url(&raw_path) {
-            Track::from_path(raw_path)
-        } else {
-            // Remote PLS entries should never resolve to local filesystem paths.
-            if base_dir.is_none() {
-                continue;
-            }
-
-            let Some(resolved) = resolve_local_playlist_path(base_dir, raw_path.as_str()) else {
-                continue;
-            };
-            Track::from_path(resolved.to_string_lossy().to_string())
-        };
-        if let Some(title) = titles.get(&idx) {
-            apply_title_hint(&mut track, title.trim().to_string());
-        }
-        out.push(track);
-    }
-    Ok(out)
-}
-
-fn apply_title_hint(track: &mut Track, title: String) {
-    if let Some((artist, song)) = title.split_once(" - ") {
-        if track.artist.is_empty() {
-            track.artist = artist.trim().to_string();
-        }
-        track.title = song.trim().to_string();
-    } else if !title.trim().is_empty() {
-        track.title = title.trim().to_string();
-    }
-}
-
-fn strip_mirror_suffix(s: &str) -> &str {
-    if let Some(i) = s.rfind("(#") {
-        if s.ends_with(')') {
-            return s[..i].trim_end_matches([' ', ':']).trim();
-        }
-    }
-    s
-}
-
-fn resolve_local_playlist_path(base_dir: Option<&Path>, raw: &str) -> Option<PathBuf> {
-    if raw.is_empty() || raw.contains('\0') {
-        return None;
-    }
-
-    let p = Path::new(raw);
-    if p.is_absolute() {
-        return Some(p.to_path_buf());
-    }
-
-    let Some(base) = base_dir else {
-        return Some(p.to_path_buf());
-    };
-    let normalized_base = normalize_path_lexical(base);
-    let normalized_target = normalize_path_lexical(base.join(p));
-
-    if !normalized_target.starts_with(&normalized_base) {
-        return None;
-    }
-    Some(normalized_target)
-}
-
-fn normalize_path_lexical(path: impl AsRef<Path>) -> PathBuf {
-    let mut out = PathBuf::new();
-    for comp in path.as_ref().components() {
-        use std::path::Component;
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
 }
 
 fn main() {

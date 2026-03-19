@@ -1,6 +1,10 @@
+use crate::ytdlp;
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, SampleFormat, StreamConfig};
+use cpal::{
+    BufferSize, Sample, SampleFormat, SampleRate, StreamConfig, SupportedBufferSize,
+    SupportedStreamConfig, SupportedStreamConfigRange,
+};
 use std::array;
 use std::fs::File;
 use std::io::{ErrorKind, Read};
@@ -33,29 +37,138 @@ const STREAM_CHUNK_SECONDS: u32 = 150;
 const STREAM_RETRY_ATTEMPTS: usize = 3;
 const STREAM_MIN_FRAMES: usize = 44_100 * 3;
 
+#[derive(Debug, Clone, Copy)]
+pub struct PlayerOptions {
+    pub sample_rate: Option<u32>,
+    pub buffer_ms: Option<u32>,
+    pub resample_quality: u8,
+    pub bit_depth: u16,
+}
+
+impl Default for PlayerOptions {
+    fn default() -> Self {
+        Self {
+            sample_rate: None,
+            buffer_ms: None,
+            resample_quality: 2,
+            bit_depth: 32,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResampleMode {
+    Nearest,
+    Linear,
+    Cubic,
+    Lanczos,
+}
+
+impl ResampleMode {
+    fn from_level(level: u8) -> Self {
+        match level.clamp(1, 4) {
+            1 => Self::Nearest,
+            2 => Self::Linear,
+            3 => Self::Cubic,
+            _ => Self::Lanczos,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Nearest => "Nearest",
+            Self::Linear => "Linear",
+            Self::Cubic => "Cubic",
+            Self::Lanczos => "Lanczos",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FfmpegPcmFormat {
+    S16,
+    F32,
+}
+
+impl FfmpegPcmFormat {
+    fn from_bit_depth(bit_depth: u16) -> Self {
+        if bit_depth <= 16 {
+            Self::S16
+        } else {
+            Self::F32
+        }
+    }
+
+    fn bit_depth(self) -> u16 {
+        match self {
+            Self::S16 => 16,
+            Self::F32 => 32,
+        }
+    }
+
+    fn ffmpeg_muxer(self) -> &'static str {
+        match self {
+            Self::S16 => "s16le",
+            Self::F32 => "f32le",
+        }
+    }
+
+    fn ffmpeg_codec(self) -> &'static str {
+        match self {
+            Self::S16 => "pcm_s16le",
+            Self::F32 => "pcm_f32le",
+        }
+    }
+}
+
+pub trait NativeSource: Send {
+    fn next_stereo(&mut self) -> (f32, f32);
+    fn position(&self) -> Duration;
+    fn duration(&self) -> Duration;
+    fn seek(&mut self, target: Duration) -> Result<()>;
+    fn play(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn pause(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn stop(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn is_finished(&self) -> bool {
+        false
+    }
+    fn close(&mut self) {}
+}
+
 pub struct Player {
     state: Arc<Mutex<PlaybackState>>,
     _stream: cpal::Stream,
     output_sample_rate: f32,
+    output_buffer_ms: Option<u32>,
+    ffmpeg_format: FfmpegPcmFormat,
 }
 
 impl Player {
-    pub fn new() -> Result<Self> {
+    pub fn new(options: PlayerOptions) -> Result<Self> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
             .ok_or_else(|| anyhow!("no default output audio device found"))?;
 
-        let supported = device
+        let default_supported = device
             .default_output_config()
             .context("failed to query default output config")?;
+        let supported = select_output_config(&device, default_supported, options.sample_rate)?;
 
         let sample_format = supported.sample_format();
-        let config: StreamConfig = supported.config();
+        let (config, actual_buffer_ms) = finalize_stream_config(&supported, options.buffer_ms);
         let out_sr = config.sample_rate.0 as f32;
         let channels = config.channels as usize;
+        let resample_mode = ResampleMode::from_level(options.resample_quality);
+        let ffmpeg_format = FfmpegPcmFormat::from_bit_depth(options.bit_depth);
 
-        let state = Arc::new(Mutex::new(PlaybackState::new(out_sr)));
+        let state = Arc::new(Mutex::new(PlaybackState::new(out_sr, resample_mode)));
         let stream = match sample_format {
             SampleFormat::F32 => {
                 build_output_stream::<f32>(&device, &config, channels, state.clone())?
@@ -74,6 +187,8 @@ impl Player {
             state,
             _stream: stream,
             output_sample_rate: out_sr,
+            output_buffer_ms: actual_buffer_ms,
+            ffmpeg_format,
         })
     }
 
@@ -81,40 +196,60 @@ impl Player {
         self.output_sample_rate
     }
 
-    pub fn play_async(&self, path: &str) {
+    pub fn output_buffer_ms(&self) -> Option<u32> {
+        self.output_buffer_ms
+    }
+
+    pub fn resample_quality_label(&self) -> &'static str {
+        let state = lock_unpoison(&self.state);
+        state.resample_mode.label()
+    }
+
+    pub fn ffmpeg_bit_depth(&self) -> u16 {
+        self.ffmpeg_format.bit_depth()
+    }
+
+    pub fn play_async(&self, path: &str, realtime: bool) {
         let path = path.to_string();
+        self.spawn_async_load(move |ffmpeg_format| decode_audio(&path, realtime, ffmpeg_format));
+    }
+
+    pub fn play_ytdlp_async(&self, page_url: &str) {
+        let page_url = page_url.to_string();
+        self.spawn_async_load(move |ffmpeg_format| {
+            let stream_url = ytdlp::resolve_stream_url(&page_url)?;
+            decode_audio(&stream_url, false, ffmpeg_format)
+        });
+    }
+
+    pub fn play_native_async<F>(&self, loader: F)
+    where
+        F: FnOnce() -> Result<Box<dyn NativeSource>> + Send + 'static,
+    {
         let state = self.state.clone();
         let load_token = {
             let mut state = lock_unpoison(&state);
+            state.prepare_for_new_load();
             state.load_token = state.load_token.wrapping_add(1);
             state.preload_token = state.preload_token.wrapping_add(1);
-            state.loading = true;
-            state.last_error = None;
-            state.playing = false;
-            state.paused = false;
-            state.track_done = false;
-            state.src_pos = 0.0;
-            state.preloaded = None;
-            state.gapless_advanced = false;
-            state.tap.clear();
             state.load_token
         };
 
         thread::spawn(move || {
-            let decoded = decode_audio(&path).map(Arc::new);
+            let source = loader();
             let mut state = lock_unpoison(&state);
             if state.load_token != load_token {
                 return;
             }
             state.loading = false;
-            match decoded {
-                Ok(track) => {
+            state.loading_started_at = None;
+            match source {
+                Ok(source) => {
                     state.last_error = None;
-                    apply_decoded_track(&mut state, track);
+                    apply_native_source(&mut state, source);
                 }
                 Err(err) => {
-                    state.track = None;
-                    state.src_pos = 0.0;
+                    state.clear_active_source();
                     state.track_done = false;
                     state.playing = false;
                     state.paused = false;
@@ -129,6 +264,7 @@ impl Player {
     pub fn preload_async(&self, path: &str) {
         let path = path.to_string();
         let state = self.state.clone();
+        let ffmpeg_format = self.ffmpeg_format;
         let (load_token, preload_token) = {
             let mut state = lock_unpoison(&state);
             state.preload_token = state.preload_token.wrapping_add(1);
@@ -136,7 +272,7 @@ impl Player {
         };
 
         thread::spawn(move || {
-            let decoded = decode_audio(&path).map(Arc::new).ok();
+            let decoded = decode_audio(&path, false, ffmpeg_format).map(Arc::new).ok();
             let mut state = lock_unpoison(&state);
             if state.load_token != load_token || state.preload_token != preload_token {
                 return;
@@ -161,9 +297,24 @@ impl Player {
 
     pub fn toggle_pause(&self) {
         let mut state = lock_unpoison(&self.state);
-        if state.playing {
-            state.paused = !state.paused;
+        if !state.playing {
+            return;
         }
+
+        let was_paused = state.paused;
+        if let Some(ActiveSource::Native(source)) = state.source.as_mut() {
+            let result = if was_paused {
+                source.play()
+            } else {
+                source.pause()
+            };
+            if let Err(err) = result {
+                state.last_error = Some(err.to_string());
+                return;
+            }
+        }
+
+        state.paused = !state.paused;
     }
 
     pub fn stop(&self) {
@@ -171,9 +322,9 @@ impl Player {
         state.load_token = state.load_token.wrapping_add(1);
         state.preload_token = state.preload_token.wrapping_add(1);
         state.loading = false;
-        state.track = None;
+        state.loading_started_at = None;
+        state.clear_active_source();
         state.preloaded = None;
-        state.src_pos = 0.0;
         state.track_done = false;
         state.playing = false;
         state.paused = false;
@@ -185,37 +336,61 @@ impl Player {
 
     pub fn seek(&self, delta: Duration, backward: bool) {
         let mut state = lock_unpoison(&self.state);
-        let Some(track) = state.track.as_ref() else {
-            return;
-        };
+        match state.source.as_mut() {
+            Some(ActiveSource::Decoded(cursor)) => {
+                let mut pos = cursor.src_pos;
+                let delta_frames = delta.as_secs_f64() * cursor.track.sample_rate as f64;
+                if backward {
+                    pos -= delta_frames;
+                } else {
+                    pos += delta_frames;
+                }
 
-        let mut pos = state.src_pos;
-        let delta_frames = delta.as_secs_f64() * track.sample_rate as f64;
-        if backward {
-            pos -= delta_frames;
-        } else {
-            pos += delta_frames;
+                let max_pos = cursor.track.frames.saturating_sub(1) as f64;
+                cursor.src_pos = pos.clamp(0.0, max_pos);
+                state.track_done = false;
+            }
+            Some(ActiveSource::Native(source)) => {
+                let current = source.position();
+                let duration = source.duration();
+                let mut target = if backward {
+                    current.saturating_sub(delta)
+                } else {
+                    current.saturating_add(delta)
+                };
+                if !duration.is_zero() {
+                    target = target.min(duration.saturating_sub(Duration::from_millis(1)));
+                }
+                if let Err(err) = source.seek(target) {
+                    state.last_error = Some(err.to_string());
+                    return;
+                }
+                state.track_done = false;
+            }
+            None => {}
         }
-
-        let max_pos = track.frames.saturating_sub(1) as f64;
-        state.src_pos = pos.clamp(0.0, max_pos);
-        state.track_done = false;
     }
 
     pub fn position(&self) -> Duration {
         let state = lock_unpoison(&self.state);
-        let Some(track) = state.track.as_ref() else {
-            return Duration::ZERO;
-        };
-        Duration::from_secs_f64(state.src_pos / track.sample_rate as f64)
+        match state.source.as_ref() {
+            Some(ActiveSource::Decoded(cursor)) => {
+                Duration::from_secs_f64(cursor.src_pos / cursor.track.sample_rate as f64)
+            }
+            Some(ActiveSource::Native(source)) => source.position(),
+            None => Duration::ZERO,
+        }
     }
 
     pub fn duration(&self) -> Duration {
         let state = lock_unpoison(&self.state);
-        let Some(track) = state.track.as_ref() else {
-            return Duration::ZERO;
-        };
-        Duration::from_secs_f64(track.frames as f64 / track.sample_rate as f64)
+        match state.source.as_ref() {
+            Some(ActiveSource::Decoded(cursor)) => Duration::from_secs_f64(
+                cursor.track.frames as f64 / cursor.track.sample_rate as f64,
+            ),
+            Some(ActiveSource::Native(source)) => source.duration(),
+            None => Duration::ZERO,
+        }
     }
 
     pub fn set_volume(&self, db: f32) {
@@ -256,6 +431,12 @@ impl Player {
         lock_unpoison(&self.state).loading
     }
 
+    pub fn loading_elapsed(&self) -> Option<Duration> {
+        lock_unpoison(&self.state)
+            .loading_started_at
+            .map(|started| started.elapsed())
+    }
+
     pub fn is_paused(&self) -> bool {
         lock_unpoison(&self.state).paused
     }
@@ -275,6 +456,165 @@ impl Player {
     pub fn close(&self) {
         self.stop();
     }
+
+    fn spawn_async_load<F>(&self, loader: F)
+    where
+        F: FnOnce(FfmpegPcmFormat) -> Result<DecodedTrack> + Send + 'static,
+    {
+        let state = self.state.clone();
+        let ffmpeg_format = self.ffmpeg_format;
+        let load_token = {
+            let mut state = lock_unpoison(&state);
+            state.prepare_for_new_load();
+            state.load_token = state.load_token.wrapping_add(1);
+            state.preload_token = state.preload_token.wrapping_add(1);
+            state.load_token
+        };
+
+        thread::spawn(move || {
+            let decoded = loader(ffmpeg_format).map(Arc::new);
+            let mut state = lock_unpoison(&state);
+            if state.load_token != load_token {
+                return;
+            }
+            state.loading = false;
+            state.loading_started_at = None;
+            match decoded {
+                Ok(track) => {
+                    state.last_error = None;
+                    apply_decoded_track(&mut state, track);
+                }
+                Err(err) => {
+                    state.clear_active_source();
+                    state.track_done = false;
+                    state.playing = false;
+                    state.paused = false;
+                    state.tap.clear();
+                    state.reset_filters();
+                    state.last_error = Some(err.to_string());
+                }
+            }
+        });
+    }
+}
+
+fn select_output_config(
+    device: &cpal::Device,
+    default_config: SupportedStreamConfig,
+    requested_sample_rate: Option<u32>,
+) -> Result<SupportedStreamConfig> {
+    let Some(target_rate) = requested_sample_rate else {
+        return Ok(default_config);
+    };
+
+    let mut best: Option<(u64, SupportedStreamConfig)> = None;
+    let default_channels = default_config.channels();
+    let default_format = default_config.sample_format();
+    let default_rate = default_config.sample_rate().0;
+
+    let ranges = device
+        .supported_output_configs()
+        .context("failed to query supported output configs")?;
+    for range in ranges {
+        let config = build_supported_config(range.clone(), target_rate);
+        let score = config_score(
+            &config,
+            target_rate,
+            default_channels,
+            default_format,
+            default_rate,
+        );
+
+        let replace = match &best {
+            Some((best_score, _)) => score < *best_score,
+            None => true,
+        };
+        if replace {
+            best = Some((score, config));
+        }
+    }
+
+    Ok(best.map(|(_, config)| config).unwrap_or(default_config))
+}
+
+fn build_supported_config(
+    range: SupportedStreamConfigRange,
+    target_rate: u32,
+) -> SupportedStreamConfig {
+    let clamped = target_rate.clamp(range.min_sample_rate().0, range.max_sample_rate().0);
+    range.with_sample_rate(SampleRate(clamped))
+}
+
+fn config_score(
+    config: &SupportedStreamConfig,
+    target_rate: u32,
+    default_channels: u16,
+    default_format: SampleFormat,
+    default_rate: u32,
+) -> u64 {
+    let rate = config.sample_rate().0;
+    let rate_penalty = rate.abs_diff(target_rate) as u64;
+    let default_rate_penalty = rate.abs_diff(default_rate) as u64;
+    let channel_penalty = if config.channels() == default_channels {
+        0
+    } else if config.channels() == 2 {
+        1
+    } else if config.channels() == 1 {
+        2
+    } else {
+        3 + u64::from(config.channels().abs_diff(default_channels))
+    };
+    let format_penalty = if config.sample_format() == default_format {
+        0
+    } else {
+        sample_format_rank(config.sample_format())
+    };
+
+    rate_penalty * 10_000 + channel_penalty * 100 + format_penalty * 10 + default_rate_penalty
+}
+
+fn sample_format_rank(format: SampleFormat) -> u64 {
+    match format {
+        SampleFormat::F32 => 0,
+        SampleFormat::I16 => 1,
+        SampleFormat::U16 => 2,
+    }
+}
+
+fn finalize_stream_config(
+    supported: &SupportedStreamConfig,
+    requested_buffer_ms: Option<u32>,
+) -> (StreamConfig, Option<u32>) {
+    let mut config = supported.config();
+    let Some(buffer_ms) = requested_buffer_ms else {
+        return (config, None);
+    };
+
+    let Some(actual_buffer_ms) = buffer_ms_from_supported(supported, buffer_ms, &mut config) else {
+        return (config, None);
+    };
+
+    (config, Some(actual_buffer_ms))
+}
+
+fn buffer_ms_from_supported(
+    supported: &SupportedStreamConfig,
+    buffer_ms: u32,
+    config: &mut StreamConfig,
+) -> Option<u32> {
+    let SupportedBufferSize::Range { min, max } = supported.buffer_size() else {
+        return None;
+    };
+
+    let sample_rate = supported.sample_rate().0.max(1);
+    let requested_frames =
+        ((u64::from(sample_rate) * u64::from(buffer_ms)).saturating_add(999)) / 1000;
+    let clamped_frames = requested_frames
+        .clamp(u64::from(*min), u64::from(*max))
+        .max(1) as u32;
+    config.buffer_size = BufferSize::Fixed(clamped_frames);
+
+    Some(((u64::from(clamped_frames) * 1000) / u64::from(sample_rate)).max(1) as u32)
 }
 
 fn build_output_stream<T>(
@@ -353,22 +693,51 @@ fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn apply_decoded_track(state: &mut PlaybackState, decoded: Arc<DecodedTrack>) {
-    state.track = Some(decoded.clone());
-    state.src_pos = 0.0;
-    state.src_step = decoded.sample_rate as f64 / state.output_sample_rate as f64;
+    state.clear_active_source();
+    state.source = Some(ActiveSource::Decoded(DecodedCursor {
+        src_pos: 0.0,
+        src_step: decoded.sample_rate as f64 / state.output_sample_rate as f64,
+        track: decoded,
+    }));
+    state.preloaded = None;
     state.track_done = false;
+    state.loading = false;
+    state.loading_started_at = None;
     state.playing = true;
     state.paused = false;
     state.tap.clear();
     state.reset_filters();
 }
 
-struct PlaybackState {
-    output_sample_rate: f32,
-    track: Option<Arc<DecodedTrack>>,
-    preloaded: Option<Arc<DecodedTrack>>,
+fn apply_native_source(state: &mut PlaybackState, source: Box<dyn NativeSource>) {
+    state.clear_active_source();
+    state.source = Some(ActiveSource::Native(source));
+    state.preloaded = None;
+    state.track_done = false;
+    state.loading = false;
+    state.loading_started_at = None;
+    state.playing = true;
+    state.paused = false;
+    state.tap.clear();
+    state.reset_filters();
+}
+
+struct DecodedCursor {
+    track: Arc<DecodedTrack>,
     src_pos: f64,
     src_step: f64,
+}
+
+enum ActiveSource {
+    Decoded(DecodedCursor),
+    Native(Box<dyn NativeSource>),
+}
+
+struct PlaybackState {
+    output_sample_rate: f32,
+    resample_mode: ResampleMode,
+    source: Option<ActiveSource>,
+    preloaded: Option<Arc<DecodedTrack>>,
     volume_db: f32,
     eq_bands: [f32; 10],
     filters: [Biquad; 10],
@@ -378,6 +747,7 @@ struct PlaybackState {
     track_done: bool,
     mono: bool,
     loading: bool,
+    loading_started_at: Option<Instant>,
     load_token: u64,
     preload_token: u64,
     gapless_advanced: bool,
@@ -385,13 +755,12 @@ struct PlaybackState {
 }
 
 impl PlaybackState {
-    fn new(output_sample_rate: f32) -> Self {
+    fn new(output_sample_rate: f32, resample_mode: ResampleMode) -> Self {
         Self {
             output_sample_rate,
-            track: None,
+            resample_mode,
+            source: None,
             preloaded: None,
-            src_pos: 0.0,
-            src_step: 1.0,
             volume_db: 0.0,
             eq_bands: [0.0; 10],
             filters: array::from_fn(|i| Biquad::new(EQ_FREQS[i], 1.4, output_sample_rate)),
@@ -401,11 +770,34 @@ impl PlaybackState {
             track_done: false,
             mono: false,
             loading: false,
+            loading_started_at: None,
             load_token: 0,
             preload_token: 0,
             gapless_advanced: false,
             last_error: None,
         }
+    }
+
+    fn clear_active_source(&mut self) {
+        if let Some(mut source) = self.source.take() {
+            if let ActiveSource::Native(native) = &mut source {
+                let _ = native.stop();
+                native.close();
+            }
+        }
+    }
+
+    fn prepare_for_new_load(&mut self) {
+        self.loading = true;
+        self.loading_started_at = Some(Instant::now());
+        self.last_error = None;
+        self.playing = false;
+        self.paused = false;
+        self.track_done = false;
+        self.preloaded = None;
+        self.gapless_advanced = false;
+        self.tap.clear();
+        self.clear_active_source();
     }
 
     fn reset_filters(&mut self) {
@@ -420,8 +812,21 @@ impl PlaybackState {
         }
 
         loop {
-            let Some(track_frames) = self.track.as_ref().map(|track| track.frames) else {
+            let Some(source) = self.source.as_mut() else {
                 return (0.0, 0.0);
+            };
+
+            if let ActiveSource::Native(source) = source {
+                let out = source.next_stereo();
+                if source.is_finished() {
+                    self.track_done = true;
+                }
+                return out;
+            }
+
+            let track_frames = match source {
+                ActiveSource::Decoded(cursor) => cursor.track.frames,
+                ActiveSource::Native(_) => unreachable!(),
             };
 
             if track_frames == 0 {
@@ -433,7 +838,11 @@ impl PlaybackState {
             }
 
             let last_frame = track_frames.saturating_sub(1) as f64;
-            if self.src_pos >= last_frame {
+            let src_pos = match self.source.as_ref() {
+                Some(ActiveSource::Decoded(cursor)) => cursor.src_pos,
+                _ => 0.0,
+            };
+            if src_pos >= last_frame {
                 if self.advance_to_preloaded() {
                     continue;
                 }
@@ -441,14 +850,20 @@ impl PlaybackState {
                 return (0.0, 0.0);
             }
 
-            let out = self
-                .track
-                .as_ref()
-                .map(|track| track.sample_at(self.src_pos))
-                .unwrap_or((0.0, 0.0));
-            self.src_pos += self.src_step;
+            let out = match self.source.as_mut() {
+                Some(ActiveSource::Decoded(cursor)) => {
+                    let out = cursor.track.sample_at(cursor.src_pos, self.resample_mode);
+                    cursor.src_pos += cursor.src_step;
+                    out
+                }
+                _ => (0.0, 0.0),
+            };
 
-            if self.src_pos >= last_frame && !self.advance_to_preloaded() {
+            let src_pos = match self.source.as_ref() {
+                Some(ActiveSource::Decoded(cursor)) => cursor.src_pos,
+                _ => 0.0,
+            };
+            if src_pos >= last_frame && !self.advance_to_preloaded() {
                 self.track_done = true;
             }
 
@@ -461,9 +876,12 @@ impl PlaybackState {
             return false;
         };
 
-        self.track = Some(next.clone());
-        self.src_pos = 0.0;
-        self.src_step = next.sample_rate as f64 / self.output_sample_rate as f64;
+        self.clear_active_source();
+        self.source = Some(ActiveSource::Decoded(DecodedCursor {
+            src_pos: 0.0,
+            src_step: next.sample_rate as f64 / self.output_sample_rate as f64,
+            track: next,
+        }));
         self.track_done = false;
         self.playing = true;
         self.paused = false;
@@ -522,41 +940,130 @@ struct DecodedTrack {
 }
 
 impl DecodedTrack {
-    fn sample_at(&self, frame: f64) -> (f32, f32) {
+    fn sample_at(&self, frame: f64, mode: ResampleMode) -> (f32, f32) {
         if self.frames == 0 {
             return (0.0, 0.0);
         }
 
-        let i0 = frame.floor() as usize;
-        let i1 = (i0 + 1).min(self.frames.saturating_sub(1));
+        match mode {
+            ResampleMode::Nearest => self.sample_nearest(frame),
+            ResampleMode::Linear => self.sample_linear(frame),
+            ResampleMode::Cubic => self.sample_cubic(frame),
+            ResampleMode::Lanczos => self.sample_lanczos(frame),
+        }
+    }
+
+    fn sample_nearest(&self, frame: f64) -> (f32, f32) {
+        self.frame_pair(frame.round() as isize)
+    }
+
+    fn sample_linear(&self, frame: f64) -> (f32, f32) {
+        let i0 = frame.floor() as isize;
+        let i1 = i0 + 1;
         let t = (frame - i0 as f64) as f32;
-
-        let base0 = i0 * 2;
-        let base1 = i1 * 2;
-
-        let l0 = self.samples.get(base0).copied().unwrap_or(0.0);
-        let r0 = self.samples.get(base0 + 1).copied().unwrap_or(0.0);
-        let l1 = self.samples.get(base1).copied().unwrap_or(l0);
-        let r1 = self.samples.get(base1 + 1).copied().unwrap_or(r0);
-
+        let (l0, r0) = self.frame_pair(i0);
+        let (l1, r1) = self.frame_pair(i1);
         (l0 + (l1 - l0) * t, r0 + (r1 - r0) * t)
+    }
+
+    fn sample_cubic(&self, frame: f64) -> (f32, f32) {
+        let i1 = frame.floor() as isize;
+        let t = (frame - i1 as f64) as f32;
+        let p0 = self.frame_pair(i1 - 1);
+        let p1 = self.frame_pair(i1);
+        let p2 = self.frame_pair(i1 + 1);
+        let p3 = self.frame_pair(i1 + 2);
+        (
+            catmull_rom(p0.0, p1.0, p2.0, p3.0, t).clamp(-1.0, 1.0),
+            catmull_rom(p0.1, p1.1, p2.1, p3.1, t).clamp(-1.0, 1.0),
+        )
+    }
+
+    fn sample_lanczos(&self, frame: f64) -> (f32, f32) {
+        let center = frame.floor() as isize;
+        let mut sum_l = 0.0f32;
+        let mut sum_r = 0.0f32;
+        let mut sum_w = 0.0f32;
+
+        for idx in (center - 2)..=(center + 3) {
+            let x = frame - idx as f64;
+            let weight = lanczos_weight(x, 3.0) as f32;
+            if weight.abs() <= f32::EPSILON {
+                continue;
+            }
+            let (left, right) = self.frame_pair(idx);
+            sum_l += left * weight;
+            sum_r += right * weight;
+            sum_w += weight;
+        }
+
+        if sum_w.abs() <= f32::EPSILON {
+            return self.frame_pair(center);
+        }
+
+        (
+            (sum_l / sum_w).clamp(-1.0, 1.0),
+            (sum_r / sum_w).clamp(-1.0, 1.0),
+        )
+    }
+
+    fn frame_pair(&self, frame: isize) -> (f32, f32) {
+        let idx = frame.clamp(0, self.frames.saturating_sub(1) as isize) as usize;
+        let base = idx * 2;
+        let left = self.samples.get(base).copied().unwrap_or(0.0);
+        let right = self.samples.get(base + 1).copied().unwrap_or(left);
+        (left, right)
     }
 }
 
-fn decode_audio(path: &str) -> Result<DecodedTrack> {
+fn catmull_rom(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
+    0.5 * ((2.0 * p1)
+        + (-p0 + p2) * t
+        + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t * t
+        + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t * t * t)
+}
+
+fn lanczos_weight(x: f64, a: f64) -> f64 {
+    let x = x.abs();
+    if x <= f64::EPSILON {
+        return 1.0;
+    }
+    if x >= a {
+        return 0.0;
+    }
+
+    sinc(std::f64::consts::PI * x) * sinc(std::f64::consts::PI * x / a)
+}
+
+fn sinc(x: f64) -> f64 {
+    if x.abs() <= f64::EPSILON {
+        1.0
+    } else {
+        x.sin() / x
+    }
+}
+
+fn decode_audio(
+    path: &str,
+    realtime: bool,
+    ffmpeg_format: FfmpegPcmFormat,
+) -> Result<DecodedTrack> {
     if is_url(path) {
-        return decode_stream_chunk_ffmpeg(path);
+        if realtime {
+            return decode_stream_chunk_ffmpeg(path, ffmpeg_format);
+        }
+        return decode_audio_ffmpeg(path, ffmpeg_format);
     }
 
     if prefers_ffmpeg_decode(path) {
-        if let Ok(track) = decode_audio_ffmpeg(path) {
+        if let Ok(track) = decode_audio_ffmpeg(path, ffmpeg_format) {
             return Ok(track);
         }
     }
 
     match decode_audio_symphonia(path) {
         Ok(track) => Ok(track),
-        Err(symphonia_err) => decode_audio_ffmpeg(path).map_err(|ffmpeg_err| {
+        Err(symphonia_err) => decode_audio_ffmpeg(path, ffmpeg_format).map_err(|ffmpeg_err| {
             anyhow!(
                 "decode failed with symphonia ({symphonia_err}); ffmpeg fallback also failed ({ffmpeg_err})"
             )
@@ -682,10 +1189,10 @@ fn downmix_to_stereo(frame: &[f32]) -> (f32, f32) {
     }
 }
 
-fn decode_stream_chunk_ffmpeg(path: &str) -> Result<DecodedTrack> {
+fn decode_stream_chunk_ffmpeg(path: &str, ffmpeg_format: FfmpegPcmFormat) -> Result<DecodedTrack> {
     let mut last_err: Option<anyhow::Error> = None;
     for _ in 0..STREAM_RETRY_ATTEMPTS {
-        match decode_audio_ffmpeg_inner(path, Some(STREAM_CHUNK_SECONDS), true) {
+        match decode_audio_ffmpeg_inner(path, Some(STREAM_CHUNK_SECONDS), true, ffmpeg_format) {
             Ok(track) if track.frames >= STREAM_MIN_FRAMES => return Ok(track),
             Ok(track) => {
                 last_err = Some(anyhow!(
@@ -703,14 +1210,15 @@ fn decode_stream_chunk_ffmpeg(path: &str) -> Result<DecodedTrack> {
     Err(last_err.unwrap_or_else(|| anyhow!("ffmpeg stream chunk decode failed")))
 }
 
-fn decode_audio_ffmpeg(path: &str) -> Result<DecodedTrack> {
-    decode_audio_ffmpeg_inner(path, None, false)
+fn decode_audio_ffmpeg(path: &str, ffmpeg_format: FfmpegPcmFormat) -> Result<DecodedTrack> {
+    decode_audio_ffmpeg_inner(path, None, false, ffmpeg_format)
 }
 
 fn decode_audio_ffmpeg_inner(
     path: &str,
     max_seconds: Option<u32>,
     stream_mode: bool,
+    ffmpeg_format: FfmpegPcmFormat,
 ) -> Result<DecodedTrack> {
     let mut ffmpeg_args: Vec<String> = vec!["-v".into(), "error".into()];
     if stream_mode {
@@ -735,9 +1243,9 @@ fn decode_audio_ffmpeg_inner(
     }
     ffmpeg_args.extend([
         "-f".into(),
-        "f32le".into(),
+        ffmpeg_format.ffmpeg_muxer().into(),
         "-acodec".into(),
-        "pcm_f32le".into(),
+        ffmpeg_format.ffmpeg_codec().into(),
         "-ac".into(),
         "2".into(),
         "-ar".into(),
@@ -789,9 +1297,23 @@ fn decode_audio_ffmpeg_inner(
         return Err(anyhow!("ffmpeg decode produced no samples: {path}"));
     }
 
-    let mut samples = Vec::<f32>::with_capacity(stdout_bytes.len() / 4);
-    for chunk in stdout_bytes.chunks_exact(4) {
-        samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    let sample_width = match ffmpeg_format {
+        FfmpegPcmFormat::S16 => 2,
+        FfmpegPcmFormat::F32 => 4,
+    };
+    let mut samples = Vec::<f32>::with_capacity(stdout_bytes.len() / sample_width);
+    match ffmpeg_format {
+        FfmpegPcmFormat::S16 => {
+            for chunk in stdout_bytes.chunks_exact(2) {
+                let sample = i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / i16::MAX as f32;
+                samples.push(sample.clamp(-1.0, 1.0));
+            }
+        }
+        FfmpegPcmFormat::F32 => {
+            for chunk in stdout_bytes.chunks_exact(4) {
+                samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+            }
+        }
     }
 
     if samples.len() < 2 {

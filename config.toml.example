@@ -22,13 +22,29 @@ eq_preset = "Flat"
 # Leave empty to use default
 theme = "Neo Mint"
 
-# Startup provider: "radio", "navidrome", or "none"
+# Startup provider: "radio", "navidrome", "youtube", "ytmusic", or "none"
+# Spotify is experimental, behind --features spotify-experimental, and currently blocked by Spotify without Premium.
 provider = "radio"
 
 # Default visualizer: "Neon", "Bricks", "Columns", "Wave", "Scatter",
 # "Flame", "Retro", "Matrix", "Binary", "Snow", or "Off"
 # Leave empty to use default
 visualizer = "Neon"
+
+# Compact mode: cap main frame width to 80 columns
+compact = false
+
+# Preferred output sample rate in Hz (optional)
+# sample_rate = 48000
+
+# Preferred output buffer in milliseconds (optional)
+# buffer_ms = 120
+
+# Resample quality: 1=Nearest, 2=Linear, 3=Cubic, 4=Lanczos
+resample_quality = 2
+
+# FFmpeg PCM precision for streamed/fallback-decoded formats: 16 or 32
+bit_depth = 32
 
 # Large seek step for Shift+Left / Shift+Right (seconds)
 seek_large_step_sec = 30
@@ -50,3 +66,22 @@ user = ""
 # Either password OR token is enough (password preferred when both are set)
 password = ""
 token = ""
+
+[ytmusic]
+# Optional YouTube / YouTube Music provider config.
+# Requires a Google OAuth Desktop app with YouTube Data API v3 enabled.
+client_id = ""
+client_secret = ""
+
+# Optional: pass browser cookies through yt-dlp for private/uploaded tracks.
+# Example: "chrome", "firefox", "brave", "edge", "safari"
+cookies_from = ""
+
+[spotify]
+# Optional Spotify provider config.
+# Experimental only: requires --features spotify-experimental and Spotify Premium.
+# Use 127.0.0.1 instead of localhost for local callbacks.
+client_id = ""
+
+# Optional override. Example: "http://127.0.0.1:8888/callback"
+redirect_uri = ""

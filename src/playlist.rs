@@ -1,6 +1,7 @@
 use encoding_rs::{WINDOWS_1251, WINDOWS_1253, WINDOWS_1255, WINDOWS_1256, WINDOWS_874};
 use rand::seq::SliceRandom;
 use rand::thread_rng;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::Path;
 use symphonia::core::formats::FormatOptions;
@@ -44,13 +45,15 @@ impl std::fmt::Display for RepeatMode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     pub path: String,
     pub title: String,
     pub artist: String,
     pub stream: bool,
     pub ytdlp: bool,
+    pub realtime: bool,
+    pub duration_secs: u32,
 }
 
 impl Track {
@@ -73,6 +76,10 @@ impl Track {
         } else {
             format!("{} - {}", self.artist, self.title)
         }
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.realtime
     }
 }
 
@@ -139,6 +146,8 @@ fn track_from_filename(path: String) -> Track {
             artist: artist.trim().to_string(),
             stream: false,
             ytdlp: false,
+            realtime: false,
+            duration_secs: 0,
         };
     }
 
@@ -148,6 +157,8 @@ fn track_from_filename(path: String) -> Track {
         artist: String::new(),
         stream: false,
         ytdlp: false,
+        realtime: false,
+        duration_secs: 0,
     }
 }
 
@@ -405,6 +416,8 @@ fn track_from_url(url: String) -> Track {
         artist: String::new(),
         stream: true,
         ytdlp: false,
+        realtime: false,
+        duration_secs: 0,
     }
 }
 
@@ -606,12 +619,6 @@ impl Playlist {
 
     pub fn queue_len(&self) -> usize {
         self.queue.len()
-    }
-
-    pub fn set_track(&mut self, idx: usize, track: Track) {
-        if idx < self.tracks.len() {
-            self.tracks[idx] = track;
-        }
     }
 
     pub fn remove_at(&mut self, idx: usize) -> bool {

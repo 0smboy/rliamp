@@ -67,7 +67,12 @@ impl Provider for RadioProvider {
             .stations
             .get(idx)
             .ok_or_else(|| anyhow!("station not found"))?;
-        runtime_url::resolve_runtime_url(&station.url)
+        let mut tracks = runtime_url::resolve_runtime_url(&station.url)?;
+        for track in &mut tracks {
+            track.realtime = true;
+            track.duration_secs = 0;
+        }
+        Ok(tracks)
     }
 }
 

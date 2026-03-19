@@ -230,6 +230,8 @@ impl Provider for NavidromeClient {
                     artist: entry.artist.unwrap_or_default(),
                     stream: true,
                     ytdlp: false,
+                    realtime: false,
+                    duration_secs: entry.duration.unwrap_or_default().max(0) as u32,
                 });
             }
         }
@@ -282,4 +284,5 @@ struct TrackEntry {
     id: String,
     title: String,
     artist: Option<String>,
+    duration: Option<i64>,
 }
